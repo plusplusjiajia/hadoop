@@ -142,7 +142,7 @@ public class CommonConfigurationKeys extends CommonConfigurationKeysPublic {
   public static final String IO_ERASURECODE_CODECS_KEY = "io.erasurecode.codecs";
 
   public static final String IO_ERASURECODE_SCHEMA_FILE_KEY =
-      "hadoop.io.erasurecode.";
+      "io.erasurecode.schema.file";
   public static final String IO_ERASURECODE_SCHEMA_FILE_DEFAULT =
       "ecschema-def.xml";
 
