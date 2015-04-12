@@ -13,30 +13,13 @@
  */
 package org.apache.hadoop.security.authentication.server;
 
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
-
-import java.io.File;
-import java.net.MalformedURLException;
-import java.net.URL;
-import java.security.KeyPair;
-import java.security.KeyPairGenerator;
-import java.security.NoSuchAlgorithmException;
-import java.security.interfaces.RSAPrivateKey;
-import java.security.interfaces.RSAPublicKey;
-import java.util.Arrays;
-import java.util.List;
-import java.util.ArrayList;
-import java.util.Properties;
-import java.util.Vector;
-import java.util.Date;
-
-import javax.servlet.ServletException;
-import javax.servlet.http.Cookie;
-import javax.servlet.http.HttpServletRequest;
-import javax.servlet.http.HttpServletResponse;
-
+import com.nimbusds.jose.JWSAlgorithm;
+import com.nimbusds.jose.JWSHeader;
+import com.nimbusds.jose.JWSSigner;
+import com.nimbusds.jose.crypto.RSASSASigner;
+import com.nimbusds.jose.util.Base64URL;
+import com.nimbusds.jwt.JWTClaimsSet;
+import com.nimbusds.jwt.SignedJWT;
 import org.apache.hadoop.minikdc.KerberosSecurityTestcase;
 import org.apache.hadoop.security.authentication.KerberosTestUtils;
 import org.apache.hadoop.security.authentication.client.AuthenticationException;
@@ -46,12 +29,23 @@ import org.junit.Before;
 import org.junit.Test;
 import org.mockito.Mockito;
 
-import com.nimbusds.jose.*;
-import com.nimbusds.jwt.JWTClaimsSet;
-import com.nimbusds.jwt.SignedJWT;
-import com.nimbusds.jose.crypto.RSASSASigner;
-import com.nimbusds.jose.crypto.RSASSAVerifier;
-import com.nimbusds.jose.util.Base64URL;
+import javax.servlet.ServletException;
+import javax.servlet.http.Cookie;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+import java.io.File;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+import java.security.NoSuchAlgorithmException;
+import java.security.interfaces.RSAPrivateKey;
+import java.security.interfaces.RSAPublicKey;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.List;
+import java.util.Properties;
+
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 public class TestJWTRedirectAuthentictionHandler extends
     KerberosSecurityTestcase {
@@ -65,13 +59,18 @@ public class TestJWTRedirectAuthentictionHandler extends
   @Test
   public void testNoPublicKeyJWT() throws Exception {
     try {
+      JwtTokenDecoder decoder = new JwtTokenDecoder();
+      decoder.setVerifyKey(null);
+      handler.setDecoder(decoder);
       Properties props = getProperties();
       handler.init(props);
 
-      SignedJWT jwt = getJWT("bob", new Date(new Date().getTime() + 5000),
-          privateKey);
+      AuthToken authToken = getAuthToken("bob", new Date(new Date().getTime() + 5000));
+      JwtTokenEncoder tokenEncoder = new JwtTokenEncoder();
+      tokenEncoder.setSignKey(privateKey);
+      String tokenStr = tokenEncoder.encodeAsString(authToken);
 
-      Cookie cookie = new Cookie("hadoop-jwt", jwt.serialize());
+      Cookie cookie = new Cookie("hadoop-jwt", tokenStr);
       HttpServletRequest request = Mockito.mock(HttpServletRequest.class);
       Mockito.when(request.getCookies()).thenReturn(new Cookie[] { cookie });
       Mockito.when(request.getRequestURL()).thenReturn(
@@ -82,6 +81,7 @@ public class TestJWTRedirectAuthentictionHandler extends
 
       AuthenticationToken token = handler.alternateAuthenticate(request,
           response);
+      assertTrue(token == null);
       fail("alternateAuthentication should have thrown a ServletException");
     } catch (ServletException se) {
       assertTrue(se.getMessage().contains(
@@ -94,16 +94,20 @@ public class TestJWTRedirectAuthentictionHandler extends
   @Test
   public void testCustomCookieNameJWT() throws Exception {
     try {
-      handler.setPublicKey(publicKey);
+      JwtTokenDecoder decoder = new JwtTokenDecoder();
+      decoder.setVerifyKey(publicKey);
+      handler.setDecoder(decoder);
 
       Properties props = getProperties();
       props.put(JWTRedirectAuthenticationHandler.JWT_COOKIE_NAME, "jowt");
       handler.init(props);
 
-      SignedJWT jwt = getJWT("bob", new Date(new Date().getTime() + 5000),
-          privateKey);
+      AuthToken authToken = getAuthToken("bob", new Date(new Date().getTime() + 5000));
+      JwtTokenEncoder tokenEncoder = new JwtTokenEncoder();
+      tokenEncoder.setSignKey(privateKey);
+      String tokenStr = tokenEncoder.encodeAsString(authToken);
 
-      Cookie cookie = new Cookie("jowt", jwt.serialize());
+      Cookie cookie = new Cookie("jowt", tokenStr);
       HttpServletRequest request = Mockito.mock(HttpServletRequest.class);
       Mockito.when(request.getCookies()).thenReturn(new Cookie[] { cookie });
       Mockito.when(request.getRequestURL()).thenReturn(
@@ -126,17 +130,21 @@ public class TestJWTRedirectAuthentictionHandler extends
   @Test
   public void testNoProviderURLJWT() throws Exception {
     try {
-      handler.setPublicKey(publicKey);
+      JwtTokenDecoder decoder = new JwtTokenDecoder();
+      decoder.setVerifyKey(publicKey);
+      handler.setDecoder(decoder);
 
       Properties props = getProperties();
       props
           .remove(JWTRedirectAuthenticationHandler.AUTHENTICATION_PROVIDER_URL);
       handler.init(props);
 
-      SignedJWT jwt = getJWT("bob", new Date(new Date().getTime() + 5000),
-          privateKey);
+      AuthToken authToken = getAuthToken("bob", new Date(new Date().getTime() + 5000));
+      JwtTokenEncoder tokenEncoder = new JwtTokenEncoder();
+      tokenEncoder.setSignKey(privateKey);
+      String tokenStr = tokenEncoder.encodeAsString(authToken);
 
-      Cookie cookie = new Cookie("hadoop-jwt", jwt.serialize());
+      Cookie cookie = new Cookie("hadoop-jwt", tokenStr);
       HttpServletRequest request = Mockito.mock(HttpServletRequest.class);
       Mockito.when(request.getCookies()).thenReturn(new Cookie[] { cookie });
       Mockito.when(request.getRequestURL()).thenReturn(
@@ -165,15 +173,19 @@ public class TestJWTRedirectAuthentictionHandler extends
       KeyPair kp = kpg.genKeyPair();
       RSAPublicKey publicKey = (RSAPublicKey) kp.getPublic();
 
-      handler.setPublicKey(publicKey);
+      JwtTokenDecoder decoder = new JwtTokenDecoder();
+      decoder.setVerifyKey(publicKey);
+      handler.setDecoder(decoder);
 
       Properties props = getProperties();
       handler.init(props);
 
-      SignedJWT jwt = getJWT("bob", new Date(new Date().getTime() + 5000),
-          privateKey);
+      AuthToken authToken = getAuthToken("bob", new Date(new Date().getTime() + 5000));
+      JwtTokenEncoder tokenEncoder = new JwtTokenEncoder();
+      tokenEncoder.setSignKey(privateKey);
+      String tokenStr = tokenEncoder.encodeAsString(authToken);
 
-      Cookie cookie = new Cookie("hadoop-jwt", "ljm" + jwt.serialize());
+      Cookie cookie = new Cookie("hadoop-jwt", "ljm" + tokenStr);
       HttpServletRequest request = Mockito.mock(HttpServletRequest.class);
       Mockito.when(request.getCookies()).thenReturn(new Cookie[] { cookie });
       Mockito.when(request.getRequestURL()).thenReturn(
@@ -204,15 +216,19 @@ public class TestJWTRedirectAuthentictionHandler extends
       KeyPair kp = kpg.genKeyPair();
       RSAPublicKey publicKey = (RSAPublicKey) kp.getPublic();
 
-      handler.setPublicKey(publicKey);
+      JwtTokenDecoder decoder = new JwtTokenDecoder();
+      decoder.setVerifyKey(publicKey);
+      handler.setDecoder(decoder);
 
       Properties props = getProperties();
       handler.init(props);
 
-      SignedJWT jwt = getJWT("bob", new Date(new Date().getTime() + 5000),
-          privateKey);
+      AuthToken authToken = getAuthToken("bob", new Date(new Date().getTime() + 5000));
+      JwtTokenEncoder tokenEncoder = new JwtTokenEncoder();
+      tokenEncoder.setSignKey(privateKey);
+      String tokenStr = tokenEncoder.encodeAsString(authToken);
 
-      Cookie cookie = new Cookie("hadoop-jwt", jwt.serialize());
+      Cookie cookie = new Cookie("hadoop-jwt", tokenStr);
       HttpServletRequest request = Mockito.mock(HttpServletRequest.class);
       Mockito.when(request.getCookies()).thenReturn(new Cookie[] { cookie });
       Mockito.when(request.getRequestURL()).thenReturn(
@@ -234,15 +250,19 @@ public class TestJWTRedirectAuthentictionHandler extends
   @Test
   public void testExpiredJWT() throws Exception {
     try {
-      handler.setPublicKey(publicKey);
+      JwtTokenDecoder decoder = new JwtTokenDecoder();
+      decoder.setVerifyKey(publicKey);
+      handler.setDecoder(decoder);
 
       Properties props = getProperties();
       handler.init(props);
 
-      SignedJWT jwt = getJWT("bob", new Date(new Date().getTime() - 1000),
-          privateKey);
+      AuthToken authToken = getAuthToken("bob", new Date(new Date().getTime() - 1000));
+      JwtTokenEncoder tokenEncoder = new JwtTokenEncoder();
+      tokenEncoder.setSignKey(privateKey);
+      String tokenStr = tokenEncoder.encodeAsString(authToken);
 
-      Cookie cookie = new Cookie("hadoop-jwt", jwt.serialize());
+      Cookie cookie = new Cookie("hadoop-jwt", tokenStr);
       HttpServletRequest request = Mockito.mock(HttpServletRequest.class);
       Mockito.when(request.getCookies()).thenReturn(new Cookie[] { cookie });
       Mockito.when(request.getRequestURL()).thenReturn(
@@ -264,17 +284,21 @@ public class TestJWTRedirectAuthentictionHandler extends
   @Test
   public void testInvalidAudienceJWT() throws Exception {
     try {
-      handler.setPublicKey(publicKey);
+      JwtTokenDecoder decoder = new JwtTokenDecoder();
+      decoder.setVerifyKey(publicKey);
+      handler.setDecoder(decoder);
 
       Properties props = getProperties();
       props
           .put(JWTRedirectAuthenticationHandler.EXPECTED_JWT_AUDIENCES, "foo");
       handler.init(props);
 
-      SignedJWT jwt = getJWT("bob", new Date(new Date().getTime() + 5000),
-          privateKey);
+      AuthToken authToken = getAuthToken("bob", new Date(new Date().getTime() + 5000));
+      JwtTokenEncoder tokenEncoder = new JwtTokenEncoder();
+      tokenEncoder.setSignKey(privateKey);
+      String tokenStr = tokenEncoder.encodeAsString(authToken);
 
-      Cookie cookie = new Cookie("hadoop-jwt", jwt.serialize());
+      Cookie cookie = new Cookie("hadoop-jwt", tokenStr);
       HttpServletRequest request = Mockito.mock(HttpServletRequest.class);
       Mockito.when(request.getCookies()).thenReturn(new Cookie[] { cookie });
       Mockito.when(request.getRequestURL()).thenReturn(
@@ -296,17 +320,21 @@ public class TestJWTRedirectAuthentictionHandler extends
   @Test
   public void testValidAudienceJWT() throws Exception {
     try {
-      handler.setPublicKey(publicKey);
+      JwtTokenDecoder decoder = new JwtTokenDecoder();
+      decoder.setVerifyKey(publicKey);
+      handler.setDecoder(decoder);
 
       Properties props = getProperties();
       props
           .put(JWTRedirectAuthenticationHandler.EXPECTED_JWT_AUDIENCES, "bar");
       handler.init(props);
 
-      SignedJWT jwt = getJWT("bob", new Date(new Date().getTime() + 5000),
-          privateKey);
+      AuthToken authToken = getAuthToken("bob", new Date(new Date().getTime() + 5000));
+      JwtTokenEncoder tokenEncoder = new JwtTokenEncoder();
+      tokenEncoder.setSignKey(privateKey);
+      String tokenStr = tokenEncoder.encodeAsString(authToken);
 
-      Cookie cookie = new Cookie("hadoop-jwt", jwt.serialize());
+      Cookie cookie = new Cookie("hadoop-jwt", tokenStr);
       HttpServletRequest request = Mockito.mock(HttpServletRequest.class);
       Mockito.when(request.getCookies()).thenReturn(new Cookie[] { cookie });
       Mockito.when(request.getRequestURL()).thenReturn(
@@ -328,15 +356,19 @@ public class TestJWTRedirectAuthentictionHandler extends
   @Test
   public void testValidJWT() throws Exception {
     try {
-      handler.setPublicKey(publicKey);
+      JwtTokenDecoder decoder = new JwtTokenDecoder();
+      decoder.setVerifyKey(publicKey);
+      handler.setDecoder(decoder);
 
       Properties props = getProperties();
       handler.init(props);
 
-      SignedJWT jwt = getJWT("alice", new Date(new Date().getTime() + 5000),
-          privateKey);
+      AuthToken authToken = getAuthToken("alice", new Date(new Date().getTime() + 5000));
+      JwtTokenEncoder tokenEncoder = new JwtTokenEncoder();
+      tokenEncoder.setSignKey(privateKey);
+      String tokenStr = tokenEncoder.encodeAsString(authToken);
 
-      Cookie cookie = new Cookie("hadoop-jwt", jwt.serialize());
+      Cookie cookie = new Cookie("hadoop-jwt", tokenStr);
       HttpServletRequest request = Mockito.mock(HttpServletRequest.class);
       Mockito.when(request.getCookies()).thenReturn(new Cookie[] { cookie });
       Mockito.when(request.getRequestURL()).thenReturn(
@@ -347,6 +379,50 @@ public class TestJWTRedirectAuthentictionHandler extends
 
       AuthenticationToken token = handler.alternateAuthenticate(request,
           response);
+      Assert.assertNotNull("Token should not be null.", token);
+      Assert.assertEquals("alice", token.getUserName());
+    } catch (ServletException se) {
+      fail("alternateAuthentication should NOT have thrown a ServletException.");
+    } catch (AuthenticationException ae) {
+      fail("alternateAuthentication should NOT have thrown an AuthenticationException");
+    }
+  }
+
+  @Test
+  public void testValidSingedAndEncryptedJWT() throws Exception {
+    try {
+      KeyPairGenerator kpg = KeyPairGenerator.getInstance("RSA");
+      kpg.initialize(2048);
+
+      KeyPair kp = kpg.genKeyPair();
+      RSAPublicKey encryptionKey = (RSAPublicKey) kp.getPublic();
+      RSAPrivateKey decryptionKey = (RSAPrivateKey) kp.getPrivate();
+
+      JwtTokenDecoder decoder = new JwtTokenDecoder();
+      decoder.setVerifyKey(publicKey);
+      decoder.setDecryptionKey(decryptionKey);
+      handler.setDecoder(decoder);
+
+      Properties props = getProperties();
+      handler.init(props);
+
+      AuthToken authToken = getAuthToken("alice", new Date(new Date().getTime() + 5000));
+      JwtTokenEncoder tokenEncoder = new JwtTokenEncoder();
+      tokenEncoder.setSignKey(privateKey);
+      tokenEncoder.setEncryptionKey(encryptionKey);
+      String tokenStr = tokenEncoder.encodeAsString(authToken);
+
+      Cookie cookie = new Cookie("hadoop-jwt", tokenStr);
+      HttpServletRequest request = Mockito.mock(HttpServletRequest.class);
+      Mockito.when(request.getCookies()).thenReturn(new Cookie[]{cookie});
+      Mockito.when(request.getRequestURL()).thenReturn(
+        new StringBuffer(SERVICE_URL));
+      HttpServletResponse response = Mockito.mock(HttpServletResponse.class);
+      Mockito.when(response.encodeRedirectURL(SERVICE_URL)).thenReturn(
+        SERVICE_URL);
+
+      AuthenticationToken token = handler.alternateAuthenticate(request,
+        response);
       Assert.assertNotNull("Token should not be null.", token);
       Assert.assertEquals("alice", token.getUserName());
     } catch (ServletException se) {
@@ -393,26 +469,15 @@ public class TestJWTRedirectAuthentictionHandler extends
     return props;
   }
 
-  protected SignedJWT getJWT(String sub, Date expires, RSAPrivateKey privateKey)
-      throws Exception {
-    JWTClaimsSet claimsSet = new JWTClaimsSet();
-    claimsSet.setSubject(sub);
-    claimsSet.setIssueTime(new Date(new Date().getTime()));
-    claimsSet.setIssuer("https://c2id.com");
-    claimsSet.setCustomClaim("scope", "openid");
-    claimsSet.setExpirationTime(expires);
+  private AuthToken getAuthToken(String sub, Date expires) {
+    AuthToken authToken = new JwtAuthToken();
+    authToken.setSubject(sub);
+    authToken.setIssueTime(new Date(new Date().getTime()));
+    authToken.setIssuer("https://c2id.com");
+    authToken.setExpirationTime(expires);
     List<String> aud = new ArrayList<String>();
     aud.add("bar");
-    claimsSet.setAudience("bar");
-
-    JWSHeader header = new JWSHeader.Builder(JWSAlgorithm.RS256).build();
-
-    SignedJWT signedJWT = new SignedJWT(header, claimsSet);
-    Base64URL sigInput = Base64URL.encode(signedJWT.getSigningInput());
-    JWSSigner signer = new RSASSASigner(privateKey);
-
-    signedJWT.sign(signer);
-
-    return signedJWT;
+    authToken.setAudiences(aud);
+    return authToken;
   }
 }
