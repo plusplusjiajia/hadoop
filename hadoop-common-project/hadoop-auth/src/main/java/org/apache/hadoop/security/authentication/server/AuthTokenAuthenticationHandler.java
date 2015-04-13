@@ -21,36 +21,18 @@ import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
 import java.util.ArrayList;
-import java.util.Date;
 import java.util.List;
 import java.util.Properties;
-import java.text.ParseException;
 
-import java.io.ByteArrayInputStream;
-import java.io.UnsupportedEncodingException;
-import java.security.PublicKey;
-import java.security.cert.CertificateFactory;
-import java.security.cert.X509Certificate;
-import java.security.cert.CertificateException;
 import java.security.interfaces.RSAPublicKey;
 
-import org.apache.commons.codec.binary.Base64;
 import org.apache.hadoop.security.authentication.client.AuthenticationException;
-import org.apache.hadoop.security.authentication.server.AltKerberosAuthenticationHandler;
-import org.apache.hadoop.security.authentication.server.AuthenticationToken;
 import org.apache.hadoop.security.authentication.util.CertificateUtil;
-import org.apache.hadoop.security.authentication.util.KerberosName;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.nimbusds.jwt.SignedJWT;
-import com.nimbusds.jose.JOSEException;
-import com.nimbusds.jose.JWSObject;
-import com.nimbusds.jose.JWSVerifier;
-import com.nimbusds.jose.crypto.RSASSAVerifier;
-
 /**
- * The {@link JWTRedirectAuthenticationHandler} extends
+ * The {@link AuthTokenAuthenticationHandler} extends
  * AltKerberosAuthenticationHandler to add WebSSO behavior for UIs. The expected
  * SSO token is a JsonWebToken (JWT). The supported algorithm is RS256 which
  * uses PKI between the token issuer and consumer. The flow requires a redirect
@@ -77,10 +59,9 @@ import com.nimbusds.jose.crypto.RSASSAVerifier;
  * Default value is "hadoop-jwt".</li>
  * </ul>
  */
-public class JWTRedirectAuthenticationHandler extends
-    AltKerberosAuthenticationHandler {
+public class AuthTokenAuthenticationHandler {
   private static Logger LOG = LoggerFactory
-      .getLogger(JWTRedirectAuthenticationHandler.class);
+      .getLogger(AuthTokenAuthenticationHandler.class);
 
   public static final String AUTHENTICATION_PROVIDER_URL = "authentication.provider.url";
   public static final String PUBLIC_KEY_PEM = "public.key.pem";
@@ -91,6 +72,22 @@ public class JWTRedirectAuthenticationHandler extends
 
   private String cookieName = "hadoop-jwt";
   private JwtTokenDecoder decoder;
+
+  /**
+   * Constant that identifies the authentication mechanism.
+   */
+  public static final String TYPE = "alt-kerberos";
+
+  /**
+   * Returns the authentication type of the authentication handler,
+   * 'alt-kerberos'.
+   *
+   * @return the authentication type of the authentication handler,
+   * 'alt-kerberos'.
+   */
+  public String getType() {
+    return TYPE;
+  }
 
   public JwtTokenDecoder setDecoder(JwtTokenDecoder de) {
     return decoder = de;
@@ -107,9 +104,9 @@ public class JWTRedirectAuthenticationHandler extends
    * @throws ServletException
    *           thrown if the handler could not be initialized.
    */
-  @Override
+//  @Override
   public void init(Properties config) throws ServletException {
-    super.init(config);
+//    super.init(config);
     if(decoder == null) {
       decoder = new JwtTokenDecoder();
     }
@@ -153,7 +150,7 @@ public class JWTRedirectAuthenticationHandler extends
     }
   }
 
-  @Override
+//  @Override
   public AuthenticationToken alternateAuthenticate(HttpServletRequest request,
       HttpServletResponse response) throws IOException,
       AuthenticationException {

@@ -13,13 +13,6 @@
  */
 package org.apache.hadoop.security.authentication.server;
 
-import com.nimbusds.jose.JWSAlgorithm;
-import com.nimbusds.jose.JWSHeader;
-import com.nimbusds.jose.JWSSigner;
-import com.nimbusds.jose.crypto.RSASSASigner;
-import com.nimbusds.jose.util.Base64URL;
-import com.nimbusds.jwt.JWTClaimsSet;
-import com.nimbusds.jwt.SignedJWT;
 import org.apache.hadoop.minikdc.KerberosSecurityTestcase;
 import org.apache.hadoop.security.authentication.KerberosTestUtils;
 import org.apache.hadoop.security.authentication.client.AuthenticationException;
@@ -54,7 +47,7 @@ public class TestJWTRedirectAuthentictionHandler extends
       "https://localhost:8443/authserver?originalUrl=" + SERVICE_URL;
   RSAPublicKey publicKey = null;
   RSAPrivateKey privateKey = null;
-  JWTRedirectAuthenticationHandler handler = null;
+  AuthTokenAuthenticationHandler handler = null;
 
   @Test
   public void testNoPublicKeyJWT() throws Exception {
@@ -99,7 +92,7 @@ public class TestJWTRedirectAuthentictionHandler extends
       handler.setDecoder(decoder);
 
       Properties props = getProperties();
-      props.put(JWTRedirectAuthenticationHandler.JWT_COOKIE_NAME, "jowt");
+      props.put(AuthTokenAuthenticationHandler.JWT_COOKIE_NAME, "jowt");
       handler.init(props);
 
       AuthToken authToken = getAuthToken("bob", new Date(new Date().getTime() + 5000));
@@ -136,7 +129,7 @@ public class TestJWTRedirectAuthentictionHandler extends
 
       Properties props = getProperties();
       props
-          .remove(JWTRedirectAuthenticationHandler.AUTHENTICATION_PROVIDER_URL);
+          .remove(AuthTokenAuthenticationHandler.AUTHENTICATION_PROVIDER_URL);
       handler.init(props);
 
       AuthToken authToken = getAuthToken("bob", new Date(new Date().getTime() + 5000));
@@ -290,7 +283,7 @@ public class TestJWTRedirectAuthentictionHandler extends
 
       Properties props = getProperties();
       props
-          .put(JWTRedirectAuthenticationHandler.EXPECTED_JWT_AUDIENCES, "foo");
+          .put(AuthTokenAuthenticationHandler.EXPECTED_JWT_AUDIENCES, "foo");
       handler.init(props);
 
       AuthToken authToken = getAuthToken("bob", new Date(new Date().getTime() + 5000));
@@ -326,7 +319,7 @@ public class TestJWTRedirectAuthentictionHandler extends
 
       Properties props = getProperties();
       props
-          .put(JWTRedirectAuthenticationHandler.EXPECTED_JWT_AUDIENCES, "bar");
+          .put(AuthTokenAuthenticationHandler.EXPECTED_JWT_AUDIENCES, "bar");
       handler.init(props);
 
       AuthToken authToken = getAuthToken("bob", new Date(new Date().getTime() + 5000));
@@ -443,7 +436,7 @@ public class TestJWTRedirectAuthentictionHandler extends
     publicKey = (RSAPublicKey) kp.getPublic();
     privateKey = (RSAPrivateKey) kp.getPrivate();
 
-    handler = new JWTRedirectAuthenticationHandler();
+    handler = new AuthTokenAuthenticationHandler();
   }
 
   protected void setupKerberosRequirements() throws Exception {
@@ -455,13 +448,13 @@ public class TestJWTRedirectAuthentictionHandler extends
 
   @After
   public void teardown() throws Exception {
-    handler.destroy();
+//    handler.destroy();
   }
 
   protected Properties getProperties() {
     Properties props = new Properties();
     props.setProperty(
-        JWTRedirectAuthenticationHandler.AUTHENTICATION_PROVIDER_URL,
+        AuthTokenAuthenticationHandler.AUTHENTICATION_PROVIDER_URL,
         "https://localhost:8443/authserver");
     props.setProperty("kerberos.principal",
         KerberosTestUtils.getServerPrincipal());
