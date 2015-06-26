@@ -18,8 +18,8 @@
 
 package org.apache.hadoop.minikdc;
 
-import org.apache.directory.server.kerberos.shared.keytab.Keytab;
-import org.apache.directory.server.kerberos.shared.keytab.KeytabEntry;
+import org.apache.kerby.kerberos.kerb.keytab.Keytab;
+import org.apache.kerby.kerberos.kerb.spec.base.PrincipalName;
 import org.junit.Assert;
 import org.junit.Test;
 
@@ -30,11 +30,12 @@ import javax.security.auth.login.Configuration;
 import javax.security.auth.login.LoginContext;
 import java.io.File;
 import java.security.Principal;
-import java.util.Set;
-import java.util.Map;
-import java.util.HashSet;
-import java.util.HashMap;
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
 
 public class TestMiniKdc extends KerberosSecurityTestcase {
   private static final boolean IBM_JAVA = System.getProperty("java.vendor")
@@ -50,18 +51,25 @@ public class TestMiniKdc extends KerberosSecurityTestcase {
     MiniKdc kdc = getKdc();
     File workDir = getWorkDir();
 
-    kdc.createPrincipal(new File(workDir, "keytab"), "foo/bar", "bar/foo");
-    Keytab kt = Keytab.read(new File(workDir, "keytab"));
-    Set<String> principals = new HashSet<String>();
-    for (KeytabEntry entry : kt.getEntries()) {
-      principals.add(entry.getPrincipalName());
+    File keyTabFile = new File(workDir, "keytab");
+    kdc.createPrincipal(keyTabFile, "foo/bar", "bar/foo");
+
+    Keytab kt = new Keytab();
+    kt.load(keyTabFile);
+
+    Set<String> principals = new TreeSet<String>();
+    for (PrincipalName principalName : kt.getPrincipals()) {
+      principals.add(principalName.getName());
     }
-    //here principals use \ instead of /
-    //because org.apache.directory.server.kerberos.shared.keytab.KeytabDecoder
-    // .getPrincipalName(IoBuffer buffer) use \\ when generates principal
-    Assert.assertEquals(new HashSet<String>(Arrays.asList(
-            "foo\\bar@" + kdc.getRealm(), "bar\\foo@" + kdc.getRealm())),
+
+    Assert.assertEquals(new TreeSet<String>(Arrays.asList(
+        "krbtgt/" + kdc.getRealm() +"@" + kdc.getRealm(),
+        "foo/bar@" + kdc.getRealm(), "bar/foo@" + kdc.getRealm())),
             principals);
+
+    if(keyTabFile.exists()) {
+        keyTabFile.delete();
+    }
   }
 
   private static class KerberosConfiguration extends Configuration {

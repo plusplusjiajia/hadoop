@@ -17,42 +17,12 @@
  */
 
 package org.apache.hadoop.minikdc;
+
 import org.apache.commons.io.Charsets;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.IOUtils;
-import org.apache.commons.lang.text.StrSubstitutor;
-import org.apache.directory.api.ldap.model.schema.SchemaManager;
-import org.apache.directory.api.ldap.schemaextractor.SchemaLdifExtractor;
-import org.apache.directory.api.ldap.schemaextractor.impl.DefaultSchemaLdifExtractor;
-import org.apache.directory.api.ldap.schemaloader.LdifSchemaLoader;
-import org.apache.directory.api.ldap.schemamanager.impl.DefaultSchemaManager;
-import org.apache.directory.server.constants.ServerDNConstants;
-import org.apache.directory.server.core.DefaultDirectoryService;
-import org.apache.directory.server.core.api.CacheService;
-import org.apache.directory.server.core.api.DirectoryService;
-import org.apache.directory.server.core.api.InstanceLayout;
-import org.apache.directory.server.core.api.schema.SchemaPartition;
-import org.apache.directory.server.core.kerberos.KeyDerivationInterceptor;
-import org.apache.directory.server.core.partition.impl.btree.jdbm.JdbmIndex;
-import org.apache.directory.server.core.partition.impl.btree.jdbm.JdbmPartition;
-import org.apache.directory.server.core.partition.ldif.LdifPartition;
-import org.apache.directory.server.kerberos.KerberosConfig;
-import org.apache.directory.server.kerberos.kdc.KdcServer;
-import org.apache.directory.server.kerberos.shared.crypto.encryption.KerberosKeyFactory;
-import org.apache.directory.server.kerberos.shared.keytab.Keytab;
-import org.apache.directory.server.kerberos.shared.keytab.KeytabEntry;
-import org.apache.directory.server.protocol.shared.transport.TcpTransport;
-import org.apache.directory.server.protocol.shared.transport.UdpTransport;
-import org.apache.directory.server.xdbm.Index;
-import org.apache.directory.shared.kerberos.KerberosTime;
-import org.apache.directory.shared.kerberos.codec.types.EncryptionType;
-import org.apache.directory.shared.kerberos.components.EncryptionKey;
-import org.apache.directory.api.ldap.model.entry.DefaultEntry;
-import org.apache.directory.api.ldap.model.entry.Entry;
-import org.apache.directory.api.ldap.model.ldif.LdifEntry;
-import org.apache.directory.api.ldap.model.ldif.LdifReader;
-import org.apache.directory.api.ldap.model.name.Dn;
-import org.apache.directory.api.ldap.model.schema.registries.SchemaLoader;
+import org.apache.kerby.kerberos.kerb.server.KdcConfigKey;
+import org.apache.kerby.kerberos.kerb.server.SimpleKdcServer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -61,21 +31,16 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.io.StringReader;
 import java.lang.reflect.Method;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.text.MessageFormat;
-import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashMap;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
-import java.util.UUID;
 
 /**
  * Mini KDC based on Apache Directory Server that can be embedded in testcases
@@ -115,22 +80,22 @@ public class MiniKdc {
   public static final String SUN_SECURITY_KRB5_DEBUG =
       "sun.security.krb5.debug";
 
-  public static void main(String[] args) throws  Exception {
+  public static void main(String[] args) throws Exception {
     if (args.length < 4) {
       System.out.println("Arguments: <WORKDIR> <MINIKDCPROPERTIES> " +
-              "<KEYTABFILE> [<PRINCIPALS>]+");
+        "<KEYTABFILE> [<PRINCIPALS>]+");
       System.exit(1);
     }
     File workDir = new File(args[0]);
     if (!workDir.exists()) {
       throw new RuntimeException("Specified work directory does not exists: "
-              + workDir.getAbsolutePath());
+        + workDir.getAbsolutePath());
     }
     Properties conf = createConf();
     File file = new File(args[1]);
     if (!file.exists()) {
       throw new RuntimeException("Specified configuration does not exists: "
-              + file.getAbsolutePath());
+        + file.getAbsolutePath());
     }
     Properties userConf = new Properties();
     InputStreamReader r = null;
@@ -145,38 +110,35 @@ public class MiniKdc {
     for (Map.Entry<?, ?> entry : userConf.entrySet()) {
       conf.put(entry.getKey(), entry.getValue());
     }
-    final MiniKdc miniKdc = new MiniKdc(conf, workDir);
+
+    final SimpleKdcServer miniKdc = new SimpleKdcServer();
+    miniKdc.init();
     miniKdc.start();
     File krb5conf = new File(workDir, "krb5.conf");
-    if (miniKdc.getKrb5conf().renameTo(krb5conf)) {
-      File keytabFile = new File(args[2]).getAbsoluteFile();
-      String[] principals = new String[args.length - 3];
-      System.arraycopy(args, 3, principals, 0, args.length - 3);
-      miniKdc.createPrincipal(keytabFile, principals);
-      System.out.println();
-      System.out.println("Standalone MiniKdc Running");
-      System.out.println("---------------------------------------------------");
-      System.out.println("  Realm           : " + miniKdc.getRealm());
-      System.out.println("  Running at      : " + miniKdc.getHost() + ":" +
-              miniKdc.getHost());
-      System.out.println("  krb5conf        : " + krb5conf);
-      System.out.println();
-      System.out.println("  created keytab  : " + keytabFile);
-      System.out.println("  with principals : " + Arrays.asList(principals));
-      System.out.println();
-      System.out.println(" Do <CTRL-C> or kill <PID> to stop it");
-      System.out.println("---------------------------------------------------");
-      System.out.println();
-      Runtime.getRuntime().addShutdownHook(new Thread() {
-        @Override
-        public void run() {
-          miniKdc.stop();
-        }
-      });
-    } else {
-      throw new RuntimeException("Cannot rename KDC's krb5conf to "
-              + krb5conf.getAbsolutePath());
-    }
+    File keytabFile = new File(args[2]).getAbsoluteFile();
+    String[] principals = new String[args.length - 3];
+    System.arraycopy(args, 3, principals, 0, args.length - 3);
+    miniKdc.createAndExportPrincipals(keytabFile, principals);
+    System.out.println();
+    System.out.println("Standalone MiniKdc Running");
+    System.out.println("---------------------------------------------------");
+    System.out.println("  Realm           : " + miniKdc.getKdcRealm());
+    System.out.println("  Running at      : " + miniKdc.getKdcHost() + ":" +
+      miniKdc.getKdcHost());
+    System.out.println("  krb5conf        : " + krb5conf);
+    System.out.println();
+    System.out.println("  created keytab  : " + keytabFile);
+    System.out.println("  with principals : " + Arrays.asList(principals));
+    System.out.println();
+    System.out.println(" Do <CTRL-C> or kill <PID> to stop it");
+    System.out.println("---------------------------------------------------");
+    System.out.println();
+    Runtime.getRuntime().addShutdownHook(new Thread() {
+      @Override
+      public void run() {
+        miniKdc.stop();
+      }
+    });
   }
 
   private static final Logger LOG = LoggerFactory.getLogger(MiniKdc.class);
@@ -228,8 +190,7 @@ public class MiniKdc {
   }
 
   private Properties conf;
-  private DirectoryService ds;
-  private KdcServer kdc;
+  private SimpleKdcServer simpleKdc;
   private int port;
   private String realm;
   private File workDir;
@@ -313,136 +274,40 @@ public class MiniKdc {
    * @throws Exception thrown if the MiniKdc could not be started.
    */
   public synchronized void start() throws Exception {
-    if (kdc != null) {
+    Thread.sleep(1000);
+      if (simpleKdc != null) {
       throw new RuntimeException("Already started");
     }
-    initDirectoryService();
-    initKDCServer();
+    simpleKdc = new SimpleKdcServer();
+    simpleKdc.init();
+    prepareKdcServer();
+    simpleKdc.start();
+    simpleKdc.createTgsPrincipal();
   }
 
-  private void initDirectoryService() throws Exception {
-    ds = new DefaultDirectoryService();
-    ds.setInstanceLayout(new InstanceLayout(workDir));
-
-    CacheService cacheService = new CacheService();
-    ds.setCacheService(cacheService);
-
-    // first load the schema
-    InstanceLayout instanceLayout = ds.getInstanceLayout();
-    File schemaPartitionDirectory = new File(
-            instanceLayout.getPartitionsDirectory(), "schema");
-    SchemaLdifExtractor extractor = new DefaultSchemaLdifExtractor(
-            instanceLayout.getPartitionsDirectory());
-    extractor.extractOrCopy();
-
-    SchemaLoader loader = new LdifSchemaLoader(schemaPartitionDirectory);
-    SchemaManager schemaManager = new DefaultSchemaManager(loader);
-    schemaManager.loadAllEnabled();
-    ds.setSchemaManager(schemaManager);
-    // Init the LdifPartition with schema
-    LdifPartition schemaLdifPartition = new LdifPartition(schemaManager);
-    schemaLdifPartition.setPartitionPath(schemaPartitionDirectory.toURI());
-
-    // The schema partition
-    SchemaPartition schemaPartition = new SchemaPartition(schemaManager);
-    schemaPartition.setWrappedPartition(schemaLdifPartition);
-    ds.setSchemaPartition(schemaPartition);
-
-    JdbmPartition systemPartition = new JdbmPartition(ds.getSchemaManager());
-    systemPartition.setId("system");
-    systemPartition.setPartitionPath(new File(
-            ds.getInstanceLayout().getPartitionsDirectory(),
-            systemPartition.getId()).toURI());
-    systemPartition.setSuffixDn(new Dn(ServerDNConstants.SYSTEM_DN));
-    systemPartition.setSchemaManager(ds.getSchemaManager());
-    ds.setSystemPartition(systemPartition);
-
-    ds.getChangeLog().setEnabled(false);
-    ds.setDenormalizeOpAttrsEnabled(true);
-    ds.addLast(new KeyDerivationInterceptor());
-
-    // create one partition
-    String orgName= conf.getProperty(ORG_NAME).toLowerCase(Locale.ENGLISH);
-    String orgDomain = conf.getProperty(ORG_DOMAIN).toLowerCase(Locale.ENGLISH);
-
-    JdbmPartition partition = new JdbmPartition(ds.getSchemaManager());
-    partition.setId(orgName);
-    partition.setPartitionPath(new File(
-            ds.getInstanceLayout().getPartitionsDirectory(), orgName).toURI());
-    partition.setSuffixDn(new Dn("dc=" + orgName + ",dc=" + orgDomain));
-    ds.addPartition(partition);
-    // indexes
-    Set<Index<?, ?, String>> indexedAttributes = new HashSet<Index<?, ?, String>>();
-    indexedAttributes.add(new JdbmIndex<String, Entry>("objectClass", false));
-    indexedAttributes.add(new JdbmIndex<String, Entry>("dc", false));
-    indexedAttributes.add(new JdbmIndex<String, Entry>("ou", false));
-    partition.setIndexedAttributes(indexedAttributes);
-
-    // And start the ds
-    ds.setInstanceId(conf.getProperty(INSTANCE));
-    ds.startup();
-    // context entry, after ds.startup()
-    Dn dn = new Dn("dc=" + orgName + ",dc=" + orgDomain);
-    Entry entry = ds.newEntry(dn);
-    entry.add("objectClass", "top", "domain");
-    entry.add("dc", orgName);
-    ds.getAdminSession().add(entry);
-  }
-
-  private void initKDCServer() throws Exception {
-    String orgName= conf.getProperty(ORG_NAME);
-    String orgDomain = conf.getProperty(ORG_DOMAIN);
-    String bindAddress = conf.getProperty(KDC_BIND_ADDRESS);
-    final Map<String, String> map = new HashMap<String, String>();
-    map.put("0", orgName.toLowerCase(Locale.ENGLISH));
-    map.put("1", orgDomain.toLowerCase(Locale.ENGLISH));
-    map.put("2", orgName.toUpperCase(Locale.ENGLISH));
-    map.put("3", orgDomain.toUpperCase(Locale.ENGLISH));
-    map.put("4", bindAddress);
-
-    ClassLoader cl = Thread.currentThread().getContextClassLoader();
-    InputStream is1 = cl.getResourceAsStream("minikdc.ldiff");
-
-    SchemaManager schemaManager = ds.getSchemaManager();
-    LdifReader reader = null;
-
-    try {
-      final String content = StrSubstitutor.replace(IOUtils.toString(is1), map);
-      reader = new LdifReader(new StringReader(content));
-
-      for (LdifEntry ldifEntry : reader) {
-        ds.getAdminSession().add(new DefaultEntry(schemaManager,
-                ldifEntry.getEntry()));
-      }
-    } finally {
-      IOUtils.closeQuietly(reader);
-      IOUtils.closeQuietly(is1);
-    }
-
-    KerberosConfig kerberosConfig = new KerberosConfig();
-    kerberosConfig.setMaximumRenewableLifetime(Long.parseLong(conf
-        .getProperty(MAX_RENEWABLE_LIFETIME)));
-    kerberosConfig.setMaximumTicketLifetime(Long.parseLong(conf
-        .getProperty(MAX_TICKET_LIFETIME)));
-    kerberosConfig.setSearchBaseDn(String.format("dc=%s,dc=%s", orgName,
-        orgDomain));
-    kerberosConfig.setPaEncTimestampRequired(false);
-    kdc = new KdcServer(kerberosConfig);
-    kdc.setDirectoryService(ds);
-
+  private void prepareKdcServer() throws Exception {
     // transport
     String transport = conf.getProperty(TRANSPORT);
+    simpleKdc.setKdcHost(getHost());
+    simpleKdc.setKdcRealm(realm);
     if (transport.trim().equals("TCP")) {
-      kdc.addTransports(new TcpTransport(bindAddress, port, 3, 50));
+        simpleKdc.setAllowTcp(true);
+        simpleKdc.setAllowUdp(false);
+        simpleKdc.setKdcTcpPort(port);
     } else if (transport.trim().equals("UDP")) {
-      kdc.addTransports(new UdpTransport(port));
+        simpleKdc.setAllowUdp(true);
+        simpleKdc.setAllowTcp(false);
+        simpleKdc.setKdcUdpPort(port);
     } else {
       throw new IllegalArgumentException("Invalid transport: " + transport);
     }
-    kdc.setServiceName(conf.getProperty(INSTANCE));
-    kdc.start();
+
+    simpleKdc.getSetting().getKdcConfig().setString(KdcConfigKey.KDC_SERVICE_NAME,
+        conf.getProperty(INSTANCE));
+    simpleKdc.getSetting().getKdcConfig().setString(KdcConfigKey.KDC_REALM, realm);
 
     StringBuilder sb = new StringBuilder();
+    ClassLoader cl = Thread.currentThread().getContextClassLoader();
     InputStream is2 = cl.getResourceAsStream("minikdc-krb5.conf");
 
     BufferedReader r = null;
@@ -462,8 +327,8 @@ public class MiniKdc {
 
     krb5conf = new File(workDir, "krb5.conf").getAbsoluteFile();
     FileUtils.writeStringToFile(krb5conf,
-            MessageFormat.format(sb.toString(), getRealm(), getHost(),
-                    Integer.toString(getPort()), System.getProperty("line.separator")));
+        MessageFormat.format(sb.toString(), getRealm(), getHost(),
+            Integer.toString(getPort()), System.getProperty("line.separator")));
     System.setProperty(JAVA_SECURITY_KRB5_CONF, krb5conf.getAbsolutePath());
 
     System.setProperty(SUN_SECURITY_KRB5_DEBUG, conf.getProperty(DEBUG,
@@ -488,16 +353,10 @@ public class MiniKdc {
    * Stops the MiniKdc
    */
   public synchronized void stop() {
-    if (kdc != null) {
+    if (simpleKdc != null) {
       System.getProperties().remove(JAVA_SECURITY_KRB5_CONF);
       System.getProperties().remove(SUN_SECURITY_KRB5_DEBUG);
-      kdc.stop();
-      try {
-        ds.shutdown();
-      } catch (Exception ex) {
-        LOG.error("Could not shutdown ApacheDS properly: {}", ex.toString(),
-                ex);
-      }
+      simpleKdc.stop();
     }
     delete(workDir);
   }
@@ -526,27 +385,7 @@ public class MiniKdc {
    */
   public synchronized void createPrincipal(String principal, String password)
           throws Exception {
-    String orgName= conf.getProperty(ORG_NAME);
-    String orgDomain = conf.getProperty(ORG_DOMAIN);
-    String baseDn = "ou=users,dc=" + orgName.toLowerCase(Locale.ENGLISH)
-                    + ",dc=" + orgDomain.toLowerCase(Locale.ENGLISH);
-    String content = "dn: uid=" + principal + "," + baseDn + "\n" +
-            "objectClass: top\n" +
-            "objectClass: person\n" +
-            "objectClass: inetOrgPerson\n" +
-            "objectClass: krb5principal\n" +
-            "objectClass: krb5kdcentry\n" +
-            "cn: " + principal + "\n" +
-            "sn: " + principal + "\n" +
-            "uid: " + principal + "\n" +
-            "userPassword: " + password + "\n" +
-            "krb5PrincipalName: " + principal + "@" + getRealm() + "\n" +
-            "krb5KeyVersionNumber: 0";
-
-    for (LdifEntry ldifEntry : new LdifReader(new StringReader(content))) {
-      ds.getAdminSession().add(new DefaultEntry(ds.getSchemaManager(),
-              ldifEntry.getEntry()));
-    }
+      simpleKdc.createPrincipal(principal, password);
   }
 
   /**
@@ -559,22 +398,6 @@ public class MiniKdc {
    */
   public void createPrincipal(File keytabFile, String ... principals)
           throws Exception {
-    String generatedPassword = UUID.randomUUID().toString();
-    Keytab keytab = new Keytab();
-    List<KeytabEntry> entries = new ArrayList<KeytabEntry>();
-    for (String principal : principals) {
-      createPrincipal(principal, generatedPassword);
-      principal = principal + "@" + getRealm();
-      KerberosTime timestamp = new KerberosTime();
-      for (Map.Entry<EncryptionType, EncryptionKey> entry : KerberosKeyFactory
-              .getKerberosKeys(principal, generatedPassword).entrySet()) {
-        EncryptionKey ekey = entry.getValue();
-        byte keyVersion = (byte) ekey.getKeyVersion();
-        entries.add(new KeytabEntry(principal, 1L, timestamp, keyVersion,
-                ekey));
-      }
-    }
-    keytab.setEntries(entries);
-    keytab.write(keytabFile);
+    simpleKdc.createAndExportPrincipals(keytabFile, principals);
   }
 }
