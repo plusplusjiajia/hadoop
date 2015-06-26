@@ -302,9 +302,8 @@ public class MiniKdc {
       throw new IllegalArgumentException("Invalid transport: " + transport);
     }
 
-    simpleKdc.getSetting().getKdcConfig().setString(KdcConfigKey.KDC_SERVICE_NAME,
+    simpleKdc.getKdcConfig().setString(KdcConfigKey.KDC_SERVICE_NAME,
         conf.getProperty(INSTANCE));
-    simpleKdc.getSetting().getKdcConfig().setString(KdcConfigKey.KDC_REALM, realm);
 
     StringBuilder sb = new StringBuilder();
     ClassLoader cl = Thread.currentThread().getContextClassLoader();

@@ -49,22 +49,16 @@
       <groupId>org.apache.kerby</groupId>
       <artifactId>kerb-simplekdc</artifactId>
       <version>1.0-SNAPSHOT</version>
-      <scope>system</scope>
-      <systemPath>${project.basedir}/lib/kerb-simplekdc-1.0-SNAPSHOT.jar</systemPath>
     </dependency>
     <dependency>
       <groupId>org.apache.kerby</groupId>
       <artifactId>kerb-server-api-all</artifactId>
       <version>1.0-SNAPSHOT</version>
-      <scope>system</scope>
-      <systemPath>${project.basedir}/lib/kerb-server-api-all-1.0-SNAPSHOT.jar</systemPath>
     </dependency>
     <dependency>
       <groupId>org.apache.kerby</groupId>
       <artifactId>kerby-asn1</artifactId>
       <version>1.0-SNAPSHOT</version>
-      <scope>system</scope>
-      <systemPath>${project.basedir}/lib/kerby-asn1-1.0-SNAPSHOT.jar</systemPath>
     </dependency>
 
   </dependencies>
