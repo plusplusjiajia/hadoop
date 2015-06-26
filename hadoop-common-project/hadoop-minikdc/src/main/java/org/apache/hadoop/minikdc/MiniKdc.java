@@ -111,34 +111,39 @@ public class MiniKdc {
       conf.put(entry.getKey(), entry.getValue());
     }
 
-    final SimpleKdcServer miniKdc = new SimpleKdcServer();
-    miniKdc.init();
+    final MiniKdc miniKdc = new MiniKdc(conf, workDir);
     miniKdc.start();
     File krb5conf = new File(workDir, "krb5.conf");
-    File keytabFile = new File(args[2]).getAbsoluteFile();
-    String[] principals = new String[args.length - 3];
-    System.arraycopy(args, 3, principals, 0, args.length - 3);
-    miniKdc.createAndExportPrincipals(keytabFile, principals);
-    System.out.println();
-    System.out.println("Standalone MiniKdc Running");
-    System.out.println("---------------------------------------------------");
-    System.out.println("  Realm           : " + miniKdc.getKdcRealm());
-    System.out.println("  Running at      : " + miniKdc.getKdcHost() + ":" +
-      miniKdc.getKdcHost());
-    System.out.println("  krb5conf        : " + krb5conf);
-    System.out.println();
-    System.out.println("  created keytab  : " + keytabFile);
-    System.out.println("  with principals : " + Arrays.asList(principals));
-    System.out.println();
-    System.out.println(" Do <CTRL-C> or kill <PID> to stop it");
-    System.out.println("---------------------------------------------------");
-    System.out.println();
-    Runtime.getRuntime().addShutdownHook(new Thread() {
-      @Override
-      public void run() {
-        miniKdc.stop();
-      }
-    });
+
+    if (miniKdc.getKrb5conf().renameTo(krb5conf)) {
+      File keytabFile = new File(args[2]).getAbsoluteFile();
+      String[] principals = new String[args.length - 3];
+      System.arraycopy(args, 3, principals, 0, args.length - 3);
+      miniKdc.createPrincipal(keytabFile, principals);
+      System.out.println();
+      System.out.println("Standalone MiniKdc Running");
+      System.out.println("---------------------------------------------------");
+      System.out.println("  Realm           : " + miniKdc.getRealm());
+      System.out.println("  Running at      : " + miniKdc.getHost() + ":" +
+        miniKdc.getHost());
+      System.out.println("  krb5conf        : " + krb5conf);
+      System.out.println();
+      System.out.println("  created keytab  : " + keytabFile);
+      System.out.println("  with principals : " + Arrays.asList(principals));
+      System.out.println();
+      System.out.println(" Do <CTRL-C> or kill <PID> to stop it");
+      System.out.println("---------------------------------------------------");
+      System.out.println();
+      Runtime.getRuntime().addShutdownHook(new Thread() {
+        @Override
+        public void run() {
+          miniKdc.stop();
+        }
+      });
+    } else {
+      throw new RuntimeException("Cannot rename KDC's krb5conf to "
+        + krb5conf.getAbsolutePath());
+    }
   }
 
   private static final Logger LOG = LoggerFactory.getLogger(MiniKdc.class);
@@ -274,7 +279,6 @@ public class MiniKdc {
    * @throws Exception thrown if the MiniKdc could not be started.
    */
   public synchronized void start() throws Exception {
-    Thread.sleep(1000);
       if (simpleKdc != null) {
       throw new RuntimeException("Already started");
     }
