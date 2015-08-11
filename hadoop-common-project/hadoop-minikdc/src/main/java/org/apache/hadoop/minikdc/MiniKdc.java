@@ -21,6 +21,7 @@ package org.apache.hadoop.minikdc;
 import org.apache.commons.io.Charsets;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.IOUtils;
+import org.apache.kerby.kerberos.kerb.KrbException;
 import org.apache.kerby.kerberos.kerb.server.KdcConfigKey;
 import org.apache.kerby.kerberos.kerb.server.SimpleKdcServer;
 import org.slf4j.Logger;
@@ -283,10 +284,9 @@ public class MiniKdc {
       throw new RuntimeException("Already started");
     }
     simpleKdc = new SimpleKdcServer();
-    simpleKdc.init();
     prepareKdcServer();
+    simpleKdc.init();
     simpleKdc.start();
-    simpleKdc.createTgsPrincipal();
   }
 
   private void prepareKdcServer() throws Exception {
@@ -359,7 +359,11 @@ public class MiniKdc {
     if (simpleKdc != null) {
       System.getProperties().remove(JAVA_SECURITY_KRB5_CONF);
       System.getProperties().remove(SUN_SECURITY_KRB5_DEBUG);
-      simpleKdc.stop();
+        try {
+            simpleKdc.stop();
+        } catch (KrbException e) {
+            e.printStackTrace();
+        }
     }
     delete(workDir);
   }
