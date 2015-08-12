@@ -47,6 +47,7 @@ public class KerberosSecurityTestcase {
 
     kdc = new MiniKdc(conf, workDir);
     kdc.start();
+      Thread.sleep(1000);
   }
 
   /**

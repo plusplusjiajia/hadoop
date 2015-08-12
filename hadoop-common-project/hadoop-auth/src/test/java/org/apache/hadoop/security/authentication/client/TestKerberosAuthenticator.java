@@ -52,6 +52,7 @@ public class TestKerberosAuthenticator extends KerberosSecurityTestcase {
   @Before
   public void setup() throws Exception {
     // create keytab
+    Thread.sleep(1000);
     File keytabFile = new File(KerberosTestUtils.getKeytabFile());
     String clientPrincipal = KerberosTestUtils.getClientPrincipal();
     String serverPrincipal = KerberosTestUtils.getServerPrincipal();

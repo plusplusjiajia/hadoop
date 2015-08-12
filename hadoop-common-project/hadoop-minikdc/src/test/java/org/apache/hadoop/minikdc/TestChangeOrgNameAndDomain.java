@@ -24,7 +24,7 @@ public class TestChangeOrgNameAndDomain extends TestMiniKdc {
   @Override
   public void createMiniKdcConf() {
     super.createMiniKdcConf();
-    Properties properties = getConf();
+   Properties properties = getConf();
     properties.setProperty(MiniKdc.ORG_NAME, "APACHE");
     properties.setProperty(MiniKdc.ORG_DOMAIN, "COM");
   }
