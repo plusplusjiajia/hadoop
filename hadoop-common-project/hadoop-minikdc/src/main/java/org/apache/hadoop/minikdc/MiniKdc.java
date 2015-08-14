@@ -36,12 +36,7 @@ import java.lang.reflect.Method;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.text.MessageFormat;
-import java.util.Arrays;
-import java.util.HashSet;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Properties;
-import java.util.Set;
+import java.util.*;
 
 /**
  * Mini KDC based on Apache Directory Server that can be embedded in testcases
@@ -80,6 +75,7 @@ public class MiniKdc {
       "java.security.krb5.conf";
   public static final String SUN_SECURITY_KRB5_DEBUG =
       "sun.security.krb5.debug";
+
 
   public static void main(String[] args) throws Exception {
     if (args.length < 4) {
@@ -202,6 +198,9 @@ public class MiniKdc {
   private File workDir;
   private File krb5conf;
 
+    public List<String> getPrincipals() throws KrbException {
+        return simpleKdc.getKadmin().getPrincipals();
+    }
   /**
    * Creates a MiniKdc.
    *

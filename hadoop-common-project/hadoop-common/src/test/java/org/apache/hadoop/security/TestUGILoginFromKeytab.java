@@ -54,6 +54,7 @@ public class TestUGILoginFromKeytab {
     workDir = folder.getRoot();
     kdc = new MiniKdc(MiniKdc.createConf(), workDir);
     kdc.start();
+      Thread.sleep(1000);
   }
 
   @After
@@ -73,6 +74,8 @@ public class TestUGILoginFromKeytab {
     String principal = "foo";
     File keytab = new File(workDir, "foo.keytab");
     kdc.createPrincipal(keytab, principal);
+
+
 
     UserGroupInformation.loginUserFromKeytab(principal, keytab.getPath());
     UserGroupInformation ugi = UserGroupInformation.getLoginUser();
