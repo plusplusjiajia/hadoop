@@ -526,6 +526,7 @@ public class UserGroupInformation {
         KEYTAB_KERBEROS_OPTIONS.put("storeKey", "true");
       }
       KEYTAB_KERBEROS_OPTIONS.put("refreshKrb5Config", "true");
+      KEYTAB_KERBEROS_OPTIONS.put("debug", String.valueOf(true));
       KEYTAB_KERBEROS_OPTIONS.putAll(BASIC_JAAS_OPTIONS);      
     }
     private static final AppConfigurationEntry KEYTAB_KERBEROS_LOGIN =
