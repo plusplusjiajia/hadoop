@@ -21,6 +21,7 @@ package org.apache.hadoop.security;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.minikdc.MiniKdc;
+import org.apache.kerby.kerberos.kerb.client.JaasKrbUtil;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
@@ -28,6 +29,7 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
+import javax.security.auth.kerberos.KerberosPrincipal;
 import java.io.File;
 
 /**
@@ -54,7 +56,6 @@ public class TestUGILoginFromKeytab {
     workDir = folder.getRoot();
     kdc = new MiniKdc(MiniKdc.createConf(), workDir);
     kdc.start();
-      Thread.sleep(1000);
   }
 
   @After
@@ -74,8 +75,6 @@ public class TestUGILoginFromKeytab {
     String principal = "foo";
     File keytab = new File(workDir, "foo.keytab");
     kdc.createPrincipal(keytab, principal);
-
-
 
     UserGroupInformation.loginUserFromKeytab(principal, keytab.getPath());
     UserGroupInformation ugi = UserGroupInformation.getLoginUser();

@@ -19,23 +19,19 @@
 package org.apache.hadoop.minikdc;
 
 import org.apache.commons.io.Charsets;
-import org.apache.commons.io.FileUtils;
-import org.apache.commons.io.IOUtils;
 import org.apache.kerby.kerberos.kerb.KrbException;
 import org.apache.kerby.kerberos.kerb.server.KdcConfigKey;
 import org.apache.kerby.kerberos.kerb.server.SimpleKdcServer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.net.InetAddress;
 import java.net.ServerSocket;
-import java.text.MessageFormat;
 import java.util.*;
 
 /**
@@ -174,7 +170,7 @@ public class MiniKdc {
     DEFAULT_CONFIG.setProperty(INSTANCE, "DefaultKrbServer");
     DEFAULT_CONFIG.setProperty(ORG_NAME, "EXAMPLE");
     DEFAULT_CONFIG.setProperty(ORG_DOMAIN, "COM");
-    DEFAULT_CONFIG.setProperty(TRANSPORT, "TCP");
+    DEFAULT_CONFIG.setProperty(TRANSPORT, "UDP");
     DEFAULT_CONFIG.setProperty(MAX_TICKET_LIFETIME, "86400000");
     DEFAULT_CONFIG.setProperty(MAX_RENEWABLE_LIFETIME, "604800000");
     DEFAULT_CONFIG.setProperty(DEBUG, "false");
@@ -218,9 +214,9 @@ public class MiniKdc {
               + missingProperties);
     }
     this.workDir = new File(workDir, Long.toString(System.currentTimeMillis()));
-    if (! workDir.exists()
-            && ! workDir.mkdirs()) {
-      throw new RuntimeException("Cannot create directory " + workDir);
+    if (! this.workDir.exists()
+            && ! this.workDir.mkdirs()) {
+      throw new RuntimeException("Cannot create directory " + this.workDir);
     }
     LOG.info("Configuration:");
     LOG.info("---------------------------------------------------------------");
@@ -285,12 +281,16 @@ public class MiniKdc {
     simpleKdc = new SimpleKdcServer();
     prepareKdcServer();
     simpleKdc.init();
+      fixKdcServer();
     simpleKdc.start();
   }
 
   private void prepareKdcServer() throws Exception {
     // transport
     String transport = conf.getProperty(TRANSPORT);
+    simpleKdc.setWorkDir(workDir);
+    System.setProperty("sun.security.krb5.debug",  conf.getProperty(DEBUG,
+            "false"));
     simpleKdc.setKdcHost(getHost());
     simpleKdc.setKdcRealm(realm);
     if (transport.trim().equals("TCP")) {
@@ -308,48 +308,24 @@ public class MiniKdc {
     simpleKdc.getKdcConfig().setString(KdcConfigKey.KDC_SERVICE_NAME,
         conf.getProperty(INSTANCE));
 
-    StringBuilder sb = new StringBuilder();
-    ClassLoader cl = Thread.currentThread().getContextClassLoader();
-    InputStream is2 = cl.getResourceAsStream("minikdc-krb5.conf");
 
-    BufferedReader r = null;
-
-    try {
-      r = new BufferedReader(new InputStreamReader(is2, Charsets.UTF_8));
-      String line = r.readLine();
-
-      while (line != null) {
-        sb.append(line).append("{3}");
-        line = r.readLine();
-      }
-    } finally {
-      IOUtils.closeQuietly(r);
-      IOUtils.closeQuietly(is2);
-    }
-
-    krb5conf = new File(workDir, "krb5.conf").getAbsoluteFile();
-    FileUtils.writeStringToFile(krb5conf,
-        MessageFormat.format(sb.toString(), getRealm(), getHost(),
-            Integer.toString(getPort()), System.getProperty("line.separator")));
-    System.setProperty(JAVA_SECURITY_KRB5_CONF, krb5conf.getAbsolutePath());
-
-    System.setProperty(SUN_SECURITY_KRB5_DEBUG, conf.getProperty(DEBUG,
-            "false"));
-
-    // refresh the config
-    Class<?> classRef;
-    if (System.getProperty("java.vendor").contains("IBM")) {
-      classRef = Class.forName("com.ibm.security.krb5.internal.Config");
-    } else {
-      classRef = Class.forName("sun.security.krb5.Config");
-    }
-    Method refreshMethod = classRef.getMethod("refresh", new Class[0]);
-    refreshMethod.invoke(classRef, new Object[0]);
-
-    LOG.info("MiniKdc listening at port: {}", getPort());
-    LOG.info("MiniKdc setting JVM krb5.conf to: {}",
-            krb5conf.getAbsolutePath());
   }
+    private void fixKdcServer() throws ClassNotFoundException, NoSuchMethodException, InvocationTargetException, IllegalAccessException {
+        // refresh the config
+        Class<?> classRef;
+        if (System.getProperty("java.vendor").contains("IBM")) {
+            classRef = Class.forName("com.ibm.security.krb5.internal.Config");
+        } else {
+            classRef = Class.forName("sun.security.krb5.Config");
+        }
+        Method refreshMethod = classRef.getMethod("refresh", new Class[0]);
+        refreshMethod.invoke(classRef, new Object[0]);
+
+        krb5conf = new File(workDir, "krb5.conf");
+        LOG.info("MiniKdc listening at port: {}", getPort());
+          LOG.info("MiniKdc setting JVM krb5.conf to: {}",
+                   krb5conf.getAbsolutePath());
+    }
 
   /**
    * Stops the MiniKdc
