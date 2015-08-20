@@ -20,6 +20,7 @@ import javax.security.auth.login.Configuration;
 import javax.security.auth.login.LoginContext;
 
 import org.apache.hadoop.security.authentication.util.KerberosUtil;
+import org.apache.kerby.kerberos.kerb.client.JaasKrbUtil;
 
 import java.io.File;
 import java.security.Principal;
@@ -39,7 +40,7 @@ import static org.apache.hadoop.util.PlatformName.IBM_JAVA;
  */
 public class KerberosTestUtils {
   private static String keytabFile = new File(System.getProperty("test.dir", "target"),
-          UUID.randomUUID().toString()).getAbsolutePath();
+          UUID.randomUUID().toString() + ".keytab").getAbsolutePath();
 
   public static String getRealm() {
     return "EXAMPLE.COM";
@@ -107,17 +108,18 @@ public class KerberosTestUtils {
 
   public static <T> T doAs(String principal, final Callable<T> callable) throws Exception {
     LoginContext loginContext = null;
-    try {
+    try {/**
       Set<Principal> principals = new HashSet<Principal>();
       principals.add(new KerberosPrincipal(KerberosTestUtils.getClientPrincipal()));
       Subject subject = new Subject(false, principals, new HashSet<Object>(), new HashSet<Object>());
       loginContext = new LoginContext("", subject, null, new KerberosConfiguration(principal));
       loginContext.login();
-      subject = loginContext.getSubject();
+      subject = loginContext.getSubject();*/
+      Subject subject = JaasKrbUtil.loginUsingKeytab(principal, new File(keytabFile));
       return Subject.doAs(subject, new PrivilegedExceptionAction<T>() {
         @Override
         public T run() throws Exception {
-          return callable.call();
+          return callable.call();//
         }
       });
     } catch (PrivilegedActionException ex) {

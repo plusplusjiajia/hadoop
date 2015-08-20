@@ -170,7 +170,7 @@ public class MiniKdc {
     DEFAULT_CONFIG.setProperty(INSTANCE, "DefaultKrbServer");
     DEFAULT_CONFIG.setProperty(ORG_NAME, "EXAMPLE");
     DEFAULT_CONFIG.setProperty(ORG_DOMAIN, "COM");
-    DEFAULT_CONFIG.setProperty(TRANSPORT, "UDP");
+    DEFAULT_CONFIG.setProperty(TRANSPORT, "TCP");
     DEFAULT_CONFIG.setProperty(MAX_TICKET_LIFETIME, "86400000");
     DEFAULT_CONFIG.setProperty(MAX_RENEWABLE_LIFETIME, "604800000");
     DEFAULT_CONFIG.setProperty(DEBUG, "false");
@@ -281,7 +281,7 @@ public class MiniKdc {
     simpleKdc = new SimpleKdcServer();
     prepareKdcServer();
     simpleKdc.init();
-      fixKdcServer();
+    fixKdcServer();
     simpleKdc.start();
   }
 
@@ -293,17 +293,17 @@ public class MiniKdc {
             "false"));
     simpleKdc.setKdcHost(getHost());
     simpleKdc.setKdcRealm(realm);
-    if (transport.trim().equals("TCP")) {
+ //   if (transport.trim().equals("TCP")) {
         simpleKdc.setAllowTcp(true);
         simpleKdc.setAllowUdp(false);
         simpleKdc.setKdcTcpPort(port);
-    } else if (transport.trim().equals("UDP")) {
-        simpleKdc.setAllowUdp(true);
-        simpleKdc.setAllowTcp(false);
-        simpleKdc.setKdcUdpPort(port);
-    } else {
-      throw new IllegalArgumentException("Invalid transport: " + transport);
-    }
+ //   } else if (transport.trim().equals("UDP")) {
+ //       simpleKdc.setAllowUdp(true);
+ //       simpleKdc.setAllowTcp(false);
+ //       simpleKdc.setKdcUdpPort(port);
+ //   } else {
+ //     throw new IllegalArgumentException("Invalid transport: " + transport);
+ //   }
 
     simpleKdc.getKdcConfig().setString(KdcConfigKey.KDC_SERVICE_NAME,
         conf.getProperty(INSTANCE));
