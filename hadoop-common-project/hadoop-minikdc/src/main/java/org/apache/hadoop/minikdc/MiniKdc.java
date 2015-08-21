@@ -193,10 +193,15 @@ public class MiniKdc {
   private String realm;
   private File workDir;
   private File krb5conf;
+  private String transport;
 
-    public List<String> getPrincipals() throws KrbException {
-        return simpleKdc.getKadmin().getPrincipals();
-    }
+  public List<String> getPrincipals() throws KrbException {
+    return simpleKdc.getKadmin().getPrincipals();
+  }
+
+  public void setTransport(String transport) {
+      this.transport = transport;
+  }
   /**
    * Creates a MiniKdc.
    *
@@ -287,23 +292,25 @@ public class MiniKdc {
 
   private void prepareKdcServer() throws Exception {
     // transport
-    String transport = conf.getProperty(TRANSPORT);
     simpleKdc.setWorkDir(workDir);
     System.setProperty("sun.security.krb5.debug",  conf.getProperty(DEBUG,
             "false"));
     simpleKdc.setKdcHost(getHost());
     simpleKdc.setKdcRealm(realm);
- //   if (transport.trim().equals("TCP")) {
+    if (transport == null) {
+        transport = conf.getProperty(TRANSPORT);
+    }
+    if (transport.trim().equals("TCP")) {
         simpleKdc.setAllowTcp(true);
         simpleKdc.setAllowUdp(false);
         simpleKdc.setKdcTcpPort(port);
- //   } else if (transport.trim().equals("UDP")) {
- //       simpleKdc.setAllowUdp(true);
- //       simpleKdc.setAllowTcp(false);
- //       simpleKdc.setKdcUdpPort(port);
- //   } else {
- //     throw new IllegalArgumentException("Invalid transport: " + transport);
- //   }
+    } else if (transport.trim().equals("UDP")) {
+        simpleKdc.setAllowUdp(true);
+        simpleKdc.setAllowTcp(false);
+        simpleKdc.setKdcUdpPort(port);
+    } else {
+      throw new IllegalArgumentException("Invalid transport: " + transport);
+    }
 
     simpleKdc.getKdcConfig().setString(KdcConfigKey.KDC_SERVICE_NAME,
         conf.getProperty(INSTANCE));

@@ -93,6 +93,7 @@ public class TestTimelineAuthenticationFilter {
   public static void setup() {
     try {
       testMiniKDC = new MiniKdc(MiniKdc.createConf(), testRootDir);
+      testMiniKDC.setTransport("TCP");
       testMiniKDC.start();
       testMiniKDC.createPrincipal(
           httpSpnegoKeytabFile, HTTP_USER + "/localhost");

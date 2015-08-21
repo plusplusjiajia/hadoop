@@ -19,6 +19,7 @@ package org.apache.hadoop.security.authentication.util;
  */
 
 import java.io.IOException;
+import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -370,7 +371,18 @@ public class KerberosName {
    * @throws IOException throws if something is wrong with the rules
    */
   public String getShortName() throws IOException {
-    String[] params;
+      try {
+          defaultRealm = KerberosUtil.getDefaultRealm();
+      } catch (ClassNotFoundException e) {
+          e.printStackTrace();
+      } catch (NoSuchMethodException e) {
+          e.printStackTrace();
+      } catch (IllegalAccessException e) {
+          e.printStackTrace();
+      } catch (InvocationTargetException e) {
+          e.printStackTrace();
+      }
+      String[] params;
     if (hostName == null) {
       // if it is already simple, just return it
       if (realm == null) {
