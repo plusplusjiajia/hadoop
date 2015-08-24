@@ -13,7 +13,6 @@
  */
 package org.apache.hadoop.security.authentication.client;
 
-import org.apache.hadoop.minikdc.KerberosSecurityTestcase;
 import org.apache.hadoop.minikdc.MiniKdc;
 import org.apache.hadoop.security.authentication.KerberosTestUtils;
 import org.apache.hadoop.security.authentication.server.AuthenticationFilter;
@@ -33,8 +32,7 @@ import java.util.Properties;
 import java.util.concurrent.Callable;
 
 @RunWith(Parameterized.class)
-public class TestKerberosAuthenticator //extends KerberosSecurityTestcase
-{
+public class TestKerberosAuthenticator {
   private static MiniKdc kdc;
   private static File workDir;
   private boolean useTomcat = false;
