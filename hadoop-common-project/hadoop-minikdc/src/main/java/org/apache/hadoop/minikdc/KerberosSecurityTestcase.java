@@ -18,7 +18,9 @@
 package org.apache.hadoop.minikdc;
 
 import org.junit.After;
+import org.junit.AfterClass;
 import org.junit.Before;
+import org.junit.BeforeClass;
 
 import java.io.File;
 import java.util.Properties;
@@ -36,18 +38,17 @@ import java.util.Properties;
  */
 
 public class KerberosSecurityTestcase {
-  private MiniKdc kdc;
-  private File workDir;
-  private Properties conf;
+  private static MiniKdc kdc;
+  private static File workDir;
+  private static Properties conf;
 
-  @Before
-  public void startMiniKdc() throws Exception {
+  @BeforeClass
+  public static void startMiniKdc() throws Exception {
     createTestDir();
     createMiniKdcConf();
 
     kdc = new MiniKdc(conf, workDir);
     kdc.start();
-    Thread.sleep(10);
   }
 
   /**
@@ -55,25 +56,25 @@ public class KerberosSecurityTestcase {
    * this directory an ApacheDS working directory will be created, this
    * directory will be deleted when the MiniKdc stops.
    */
-  public void createTestDir() {
+  public static void createTestDir() {
     workDir = new File(System.getProperty("test.dir", "target"));
   }
 
   /**
    * Create a Kdc configuration
    */
-  public void createMiniKdcConf() {
+  public static void createMiniKdcConf() {
     conf = MiniKdc.createConf();
   }
 
-  @After
-  public void stopMiniKdc() {
+  @AfterClass
+  public static void stopMiniKdc() throws InterruptedException {
     if (kdc != null) {
       kdc.stop();
     }
   }
 
-  public MiniKdc getKdc() {
+  public static MiniKdc getKdc() {
     return kdc;
   }
 
@@ -81,7 +82,7 @@ public class KerberosSecurityTestcase {
     return workDir;
   }
 
-  public Properties getConf() {
+  public static Properties getConf() {
     return conf;
   }
 }

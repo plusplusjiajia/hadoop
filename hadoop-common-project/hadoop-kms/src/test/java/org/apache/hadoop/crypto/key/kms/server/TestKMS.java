@@ -1530,7 +1530,7 @@ public class TestKMS {
       public Void call() throws Exception {
         final Configuration conf = new Configuration();
         conf.setInt(KeyProvider.DEFAULT_BITLENGTH_NAME, 128);
-        conf.setInt(KeyProvider.DEFAULT_BITLENGTH_NAME, 64);
+        conf.setInt(KeyProvider.DEFAULT_BITLENGTH_NAME, 128);
         final URI uri = createKMSUri(getKMSUrl());
 
         doAs("client", new PrivilegedExceptionAction<Void>() {
@@ -1656,7 +1656,7 @@ public class TestKMS {
       @Override
       public Void call() throws Exception {
         final Configuration conf = new Configuration();
-        conf.setInt(KeyProvider.DEFAULT_BITLENGTH_NAME, 64);
+        conf.setInt(KeyProvider.DEFAULT_BITLENGTH_NAME, 128);
         final URI uri = createKMSUri(getKMSUrl());
         final Credentials credentials = new Credentials();
         final UserGroupInformation nonKerberosUgi =
@@ -1840,7 +1840,7 @@ public class TestKMS {
       @Override
       public Void call() throws Exception {
         final Configuration conf = new Configuration();
-        conf.setInt(KeyProvider.DEFAULT_BITLENGTH_NAME, 64);
+        conf.setInt(KeyProvider.DEFAULT_BITLENGTH_NAME, 128);
         final URI uri = createKMSUri(getKMSUrl());
 
         UserGroupInformation proxyUgi = null;
@@ -1945,7 +1945,7 @@ public class TestKMS {
       @Override
       public Void call() throws Exception {
         final Configuration conf = new Configuration();
-        conf.setInt(KeyProvider.DEFAULT_BITLENGTH_NAME, 64);
+        conf.setInt(KeyProvider.DEFAULT_BITLENGTH_NAME, 128);
         final URI uri = createKMSUri(getKMSUrl());
 
         UserGroupInformation proxyUgi = null;
