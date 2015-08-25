@@ -38,12 +38,13 @@ import java.util.Properties;
  */
 
 public class KerberosSecurityTestcase {
-  private static MiniKdc kdc;
-  private static File workDir;
-  private static Properties conf;
+  private MiniKdc kdc;
+  private File workDir;
+  private Properties conf;
 
-  @BeforeClass
-  public static void startMiniKdc() throws Exception {
+  @Before
+  public void startMiniKdc() throws Exception {
+    Thread.sleep(2000);
     createTestDir();
     createMiniKdcConf();
 
@@ -56,25 +57,25 @@ public class KerberosSecurityTestcase {
    * this directory an ApacheDS working directory will be created, this
    * directory will be deleted when the MiniKdc stops.
    */
-  public static void createTestDir() {
+  public void createTestDir() {
     workDir = new File(System.getProperty("test.dir", "target"));
   }
 
   /**
    * Create a Kdc configuration
    */
-  public static void createMiniKdcConf() {
+  public void createMiniKdcConf() {
     conf = MiniKdc.createConf();
   }
 
-  @AfterClass
-  public static void stopMiniKdc() throws InterruptedException {
+  @After
+  public void stopMiniKdc() throws InterruptedException {
     if (kdc != null) {
       kdc.stop();
     }
   }
 
-  public static MiniKdc getKdc() {
+  public MiniKdc getKdc() {
     return kdc;
   }
 
@@ -82,7 +83,7 @@ public class KerberosSecurityTestcase {
     return workDir;
   }
 
-  public static Properties getConf() {
+  public Properties getConf() {
     return conf;
   }
 }
