@@ -203,7 +203,6 @@ public class FilterFileSystem extends FileSystem {
 
 
   @Override
-  @Deprecated
   public FSDataOutputStream createNonRecursive(Path f, FsPermission permission,
       EnumSet<CreateFlag> flags, int bufferSize, short replication, long blockSize,
       Progressable progress) throws IOException {
@@ -390,7 +389,13 @@ public class FilterFileSystem extends FileSystem {
   public long getUsed() throws IOException{
     return fs.getUsed();
   }
-  
+
+  /** Return the total size of all files from a specified path.*/
+  @Override
+  public long getUsed(Path path) throws IOException {
+    return fs.getUsed(path);
+  }
+
   @Override
   public long getDefaultBlockSize() {
     return fs.getDefaultBlockSize();
@@ -628,8 +633,25 @@ public class FilterFileSystem extends FileSystem {
   }
 
   @Override
+  public BlockStoragePolicySpi getStoragePolicy(final Path src)
+      throws IOException {
+    return fs.getStoragePolicy(src);
+  }
+
+  @Override
   public Collection<? extends BlockStoragePolicySpi> getAllStoragePolicies()
       throws IOException {
     return fs.getAllStoragePolicies();
+  }
+
+  @Override
+  public Path getTrashRoot(Path path) throws IOException {
+    return fs.getTrashRoot(path);
+  }
+
+  @Override
+  public Collection<FileStatus> getTrashRoots(boolean allUsers)
+      throws IOException {
+    return fs.getTrashRoots(allUsers);
   }
 }

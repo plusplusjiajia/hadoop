@@ -22,7 +22,7 @@ import java.net.HttpURLConnection;
 /** Http POST operation parameter. */
 public class PutOpParam extends HttpOpParam<PutOpParam.Op> {
   /** Put operations. */
-  public static enum Op implements HttpOpParam.Op {
+  public enum Op implements HttpOpParam.Op {
     CREATE(true, HttpURLConnection.HTTP_CREATED),
 
     MKDIRS(false, HttpURLConnection.HTTP_OK),
@@ -46,6 +46,8 @@ public class PutOpParam extends HttpOpParam<PutOpParam.Op> {
     SETXATTR(false, HttpURLConnection.HTTP_OK),
     REMOVEXATTR(false, HttpURLConnection.HTTP_OK),
 
+    ALLOWSNAPSHOT(false, HttpURLConnection.HTTP_OK),
+    DISALLOWSNAPSHOT(false, HttpURLConnection.HTTP_OK),
     CREATESNAPSHOT(false, HttpURLConnection.HTTP_OK),
     RENAMESNAPSHOT(false, HttpURLConnection.HTTP_OK),
 
@@ -60,7 +62,7 @@ public class PutOpParam extends HttpOpParam<PutOpParam.Op> {
     }
 
     Op(final boolean doOutputAndRedirect, final int expectedHttpResponseCode,
-       final boolean requireAuth) {
+        final boolean requireAuth) {
       this.doOutputAndRedirect = doOutputAndRedirect;
       this.expectedHttpResponseCode = expectedHttpResponseCode;
       this.requireAuth = requireAuth;
@@ -97,7 +99,7 @@ public class PutOpParam extends HttpOpParam<PutOpParam.Op> {
     }
   }
 
-  private static final Domain<Op> DOMAIN = new Domain<Op>(NAME, Op.class);
+  private static final Domain<Op> DOMAIN = new Domain<>(NAME, Op.class);
 
   /**
    * Constructor.

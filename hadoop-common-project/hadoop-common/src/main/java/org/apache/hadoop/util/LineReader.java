@@ -303,7 +303,10 @@ public class LineReader implements Closeable {
         startPosn = bufferPosn = 0;
         bufferLength = fillBuffer(in, buffer, ambiguousByteCount > 0);
         if (bufferLength <= 0) {
-          str.append(recordDelimiterBytes, 0, ambiguousByteCount);
+          if (ambiguousByteCount > 0) {
+            str.append(recordDelimiterBytes, 0, ambiguousByteCount);
+            bytesConsumed += ambiguousByteCount;
+          }
           break; // EOF
         }
       }
@@ -325,13 +328,17 @@ public class LineReader implements Closeable {
       if (appendLength > maxLineLength - txtLength) {
         appendLength = maxLineLength - txtLength;
       }
+      bytesConsumed += ambiguousByteCount;
+      if (appendLength >= 0 && ambiguousByteCount > 0) {
+        //appending the ambiguous characters (refer case 2.2)
+        str.append(recordDelimiterBytes, 0, ambiguousByteCount);
+        ambiguousByteCount = 0;
+        // since it is now certain that the split did not split a delimiter we
+        // should not read the next record: clear the flag otherwise duplicate
+        // records could be generated
+        unsetNeedAdditionalRecordAfterSplit();
+      }
       if (appendLength > 0) {
-        if (ambiguousByteCount > 0) {
-          str.append(recordDelimiterBytes, 0, ambiguousByteCount);
-          //appending the ambiguous characters (refer case 2.2)
-          bytesConsumed += ambiguousByteCount;
-          ambiguousByteCount=0;
-        }
         str.append(buffer, startPosn, appendLength);
         txtLength += appendLength;
       }
@@ -376,5 +383,10 @@ public class LineReader implements Closeable {
 
   protected int getBufferSize() {
     return bufferSize;
+  }
+
+  protected void unsetNeedAdditionalRecordAfterSplit() {
+    // needed for custom multi byte line delimiters only
+    // see MAPREDUCE-6549 for details
   }
 }

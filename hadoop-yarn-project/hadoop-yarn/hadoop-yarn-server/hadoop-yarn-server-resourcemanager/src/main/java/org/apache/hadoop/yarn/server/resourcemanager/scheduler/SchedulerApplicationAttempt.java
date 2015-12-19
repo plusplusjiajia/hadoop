@@ -24,10 +24,12 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.apache.commons.lang.time.DateUtils;
+import org.apache.commons.lang.time.FastDateFormat;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
@@ -45,22 +47,27 @@ import org.apache.hadoop.yarn.api.records.NodeId;
 import org.apache.hadoop.yarn.api.records.Priority;
 import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.api.records.ResourceRequest;
+import org.apache.hadoop.yarn.nodelabels.CommonNodeLabelsManager;
+import org.apache.hadoop.yarn.server.api.ContainerType;
 import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
+import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.AggregateAppResourceUsage;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttempt;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptState;
 import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainer;
+import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainerChangeResourceEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainerEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainerEventType;
 import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainerImpl;
 import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainerReservedEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainerState;
+import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainerUpdatesAcquiredEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNodeCleanContainerEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.SchedulingMode;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.policy.SchedulableEntity;
+import org.apache.hadoop.yarn.state.InvalidStateTransitionException;
 import org.apache.hadoop.yarn.util.resource.ResourceCalculator;
 import org.apache.hadoop.yarn.util.resource.Resources;
-import org.apache.hadoop.yarn.server.resourcemanager.scheduler.policy.SchedulableEntity;
-
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
@@ -78,6 +85,9 @@ public class SchedulerApplicationAttempt implements SchedulableEntity {
   
   private static final Log LOG = LogFactory
     .getLog(SchedulerApplicationAttempt.class);
+
+  private FastDateFormat fdf =
+      FastDateFormat.getInstance("EEE MMM dd HH:mm:ss Z yyyy");
 
   private static final long MEM_AGGREGATE_ALLOCATION_CACHE_MSECS = 3000;
   protected long lastMemoryAggregateAllocationUpdateTime = 0;
@@ -97,13 +107,17 @@ public class SchedulerApplicationAttempt implements SchedulableEntity {
   private boolean unmanagedAM = true;
   private boolean amRunning = false;
   private LogAggregationContext logAggregationContext;
-  
+
+  private volatile Priority appPriority = null;
+
   protected ResourceUsage attemptResourceUsage = new ResourceUsage();
   private AtomicLong firstAllocationRequestSentTime = new AtomicLong(0);
   private AtomicLong firstContainerAllocatedTime = new AtomicLong(0);
 
-  protected List<RMContainer> newlyAllocatedContainers = 
-      new ArrayList<RMContainer>();
+  protected List<RMContainer> newlyAllocatedContainers = new ArrayList<>();
+  protected Map<ContainerId, RMContainer> newlyDecreasedContainers = new HashMap<>();
+  protected Map<ContainerId, RMContainer> newlyIncreasedContainers = new HashMap<>();
+  protected Set<NMToken> updatedNMTokens = new HashSet<>();
 
   // This pendingRelease is used in work-preserving recovery scenario to keep
   // track of the AM's outstanding release requests. RM on recovery could
@@ -137,9 +151,13 @@ public class SchedulerApplicationAttempt implements SchedulableEntity {
 
   protected Queue queue;
   protected boolean isStopped = false;
-  
+
+  protected String appAMNodePartitionName = CommonNodeLabelsManager.NO_LABEL;
+
   protected final RMContext rmContext;
-  
+
+  private RMAppAttempt appAttempt;
+
   public SchedulerApplicationAttempt(ApplicationAttemptId applicationAttemptId, 
       String user, Queue queue, ActiveUsersManager activeUsersManager,
       RMContext rmContext) {
@@ -154,9 +172,11 @@ public class SchedulerApplicationAttempt implements SchedulableEntity {
     if (rmContext.getRMApps() != null &&
         rmContext.getRMApps()
             .containsKey(applicationAttemptId.getApplicationId())) {
+      RMApp rmApp = rmContext.getRMApps().get(applicationAttemptId.getApplicationId());
       ApplicationSubmissionContext appSubmissionContext =
-          rmContext.getRMApps().get(applicationAttemptId.getApplicationId())
+          rmApp
               .getApplicationSubmissionContext();
+      appAttempt = rmApp.getCurrentAppAttempt();
       if (appSubmissionContext != null) {
         unmanagedAM = appSubmissionContext.getUnmanagedAM();
         this.logAggregationContext =
@@ -217,7 +237,8 @@ public class SchedulerApplicationAttempt implements SchedulableEntity {
     return appSchedulingInfo.getPriorities();
   }
   
-  public synchronized ResourceRequest getResourceRequest(Priority priority, String resourceName) {
+  public synchronized ResourceRequest getResourceRequest(Priority priority,
+      String resourceName) {
     return this.appSchedulingInfo.getResourceRequest(priority, resourceName);
   }
 
@@ -237,8 +258,16 @@ public class SchedulerApplicationAttempt implements SchedulableEntity {
     return attemptResourceUsage.getAMUsed();
   }
 
+  public Resource getAMResource(String label) {
+    return attemptResourceUsage.getAMUsed(label);
+  }
+
   public void setAMResource(Resource amResource) {
     attemptResourceUsage.setAMUsed(amResource);
+  }
+
+  public void setAMResource(String label, Resource amResource) {
+    attemptResourceUsage.setAMUsed(label, amResource);
   }
 
   public boolean isAmRunning() {
@@ -322,24 +351,28 @@ public class SchedulerApplicationAttempt implements SchedulableEntity {
     return reservedContainers;
   }
   
-  public synchronized RMContainer reserve(SchedulerNode node, Priority priority,
-      RMContainer rmContainer, Container container) {
-    // Create RMContainer if necessary
-    if (rmContainer == null) {
-      rmContainer = 
-          new RMContainerImpl(container, getApplicationAttemptId(), 
-              node.getNodeID(), appSchedulingInfo.getUser(), rmContext);
+  public synchronized boolean reserveIncreasedContainer(SchedulerNode node,
+      Priority priority, RMContainer rmContainer, Resource reservedResource) {
+    if (commonReserve(node, priority, rmContainer, reservedResource)) {
       attemptResourceUsage.incReserved(node.getPartition(),
-          container.getResource());
-      
-      // Reset the re-reservation count
-      resetReReservations(priority);
-    } else {
-      // Note down the re-reservation
-      addReReservation(priority);
+          reservedResource);
+      // succeeded
+      return true;
     }
-    rmContainer.handle(new RMContainerReservedEvent(container.getId(), 
-        container.getResource(), node.getNodeID(), priority));
+    
+    return false;
+  }
+  
+  private synchronized boolean commonReserve(SchedulerNode node,
+      Priority priority, RMContainer rmContainer, Resource reservedResource) {
+    try {
+      rmContainer.handle(new RMContainerReservedEvent(rmContainer
+          .getContainerId(), reservedResource, node.getNodeID(), priority));
+    } catch (InvalidStateTransitionException e) {
+      // We reach here could be caused by container already finished, return
+      // false indicate it fails
+      return false;
+    }
     
     Map<NodeId, RMContainer> reservedContainers = 
         this.reservedContainers.get(priority);
@@ -354,8 +387,30 @@ public class SchedulerApplicationAttempt implements SchedulableEntity {
           + " reserved container " + rmContainer + " on node " + node
           + ". This attempt currently has " + reservedContainers.size()
           + " reserved containers at priority " + priority
-          + "; currentReservation " + container.getResource());
+          + "; currentReservation " + reservedResource);
     }
+    
+    return true;
+  }
+  
+  public synchronized RMContainer reserve(SchedulerNode node,
+      Priority priority, RMContainer rmContainer, Container container) {
+    // Create RMContainer if necessary
+    if (rmContainer == null) {
+      rmContainer =
+          new RMContainerImpl(container, getApplicationAttemptId(),
+              node.getNodeID(), appSchedulingInfo.getUser(), rmContext);
+      attemptResourceUsage.incReserved(node.getPartition(),
+          container.getResource());
+
+      // Reset the re-reservation count
+      resetReReservations(priority);
+    } else {
+      // Note down the re-reservation
+      addReReservation(priority);
+    }
+    
+    commonReserve(node, priority, rmContainer, container.getResource());
 
     return rmContainer;
   }
@@ -435,65 +490,106 @@ public class SchedulerApplicationAttempt implements SchedulableEntity {
   public Resource getCurrentConsumption() {
     return attemptResourceUsage.getUsed();
   }
-
-  public static class ContainersAndNMTokensAllocation {
-    List<Container> containerList;
-    List<NMToken> nmTokenList;
-
-    public ContainersAndNMTokensAllocation(List<Container> containerList,
-        List<NMToken> nmTokenList) {
-      this.containerList = containerList;
-      this.nmTokenList = nmTokenList;
+  
+  private Container updateContainerAndNMToken(RMContainer rmContainer,
+      boolean newContainer, boolean increasedContainer) {
+    Container container = rmContainer.getContainer();
+    ContainerType containerType = ContainerType.TASK;
+    // The working knowledge is that masterContainer for AM is null as it
+    // itself is the master container.
+    if (isWaitingForAMContainer()) {
+      containerType = ContainerType.APPLICATION_MASTER;
     }
-
-    public List<Container> getContainerList() {
-      return containerList;
+    try {
+      // create container token and NMToken altogether.
+      container.setContainerToken(rmContext.getContainerTokenSecretManager()
+          .createContainerToken(container.getId(), container.getNodeId(),
+              getUser(), container.getResource(), container.getPriority(),
+              rmContainer.getCreationTime(), this.logAggregationContext,
+              rmContainer.getNodeLabelExpression(), containerType));
+      NMToken nmToken =
+          rmContext.getNMTokenSecretManager().createAndGetNMToken(getUser(),
+              getApplicationAttemptId(), container);
+      if (nmToken != null) {
+        updatedNMTokens.add(nmToken);
+      }
+    } catch (IllegalArgumentException e) {
+      // DNS might be down, skip returning this container.
+      LOG.error("Error trying to assign container token and NM token to"
+          + " an updated container " + container.getId(), e);
+      return null;
     }
-
-    public List<NMToken> getNMTokenList() {
-      return nmTokenList;
+    
+    if (newContainer) {
+      rmContainer.handle(new RMContainerEvent(
+          rmContainer.getContainerId(), RMContainerEventType.ACQUIRED));
+    } else {
+      rmContainer.handle(new RMContainerUpdatesAcquiredEvent(
+          rmContainer.getContainerId(), increasedContainer));
     }
+    return container;
   }
 
-  // Create container token and NMToken altogether, if either of them fails for
+  // Create container token and update NMToken altogether, if either of them fails for
   // some reason like DNS unavailable, do not return this container and keep it
   // in the newlyAllocatedContainers waiting to be refetched.
-  public synchronized ContainersAndNMTokensAllocation
-      pullNewlyAllocatedContainersAndNMTokens() {
+  public synchronized List<Container> pullNewlyAllocatedContainers() {
     List<Container> returnContainerList =
         new ArrayList<Container>(newlyAllocatedContainers.size());
-    List<NMToken> nmTokens = new ArrayList<NMToken>();
     for (Iterator<RMContainer> i = newlyAllocatedContainers.iterator(); i
-      .hasNext();) {
+        .hasNext();) {
       RMContainer rmContainer = i.next();
-      Container container = rmContainer.getContainer();
-      try {
-        // create container token and NMToken altogether.
-        container.setContainerToken(rmContext.getContainerTokenSecretManager()
-            .createContainerToken(container.getId(), container.getNodeId(),
-                getUser(), container.getResource(), container.getPriority(),
-                rmContainer.getCreationTime(), this.logAggregationContext,
-                rmContainer.getNodeLabelExpression()));
-        NMToken nmToken =
-            rmContext.getNMTokenSecretManager().createAndGetNMToken(getUser(),
-              getApplicationAttemptId(), container);
-        if (nmToken != null) {
-          nmTokens.add(nmToken);
-        }
-      } catch (IllegalArgumentException e) {
-        // DNS might be down, skip returning this container.
-        LOG.error("Error trying to assign container token and NM token to" +
-            " an allocated container " + container.getId(), e);
-        continue;
+      Container updatedContainer =
+          updateContainerAndNMToken(rmContainer, true, false);
+      // Only add container to return list when it's not null. updatedContainer
+      // could be null when generate token failed, it can be caused by DNS
+      // resolving failed.
+      if (updatedContainer != null) {
+        returnContainerList.add(updatedContainer);
+        i.remove();
       }
-      returnContainerList.add(container);
-      i.remove();
-      rmContainer.handle(new RMContainerEvent(rmContainer.getContainerId(),
-        RMContainerEventType.ACQUIRED));
     }
-    return new ContainersAndNMTokensAllocation(returnContainerList, nmTokens);
+    return returnContainerList;
+  }
+  
+  private synchronized List<Container> pullNewlyUpdatedContainers(
+      Map<ContainerId, RMContainer> updatedContainerMap, boolean increase) {
+    List<Container> returnContainerList =
+        new ArrayList<Container>(updatedContainerMap.size());
+    for (Iterator<Entry<ContainerId, RMContainer>> i =
+        updatedContainerMap.entrySet().iterator(); i.hasNext();) {
+      RMContainer rmContainer = i.next().getValue();
+      Container updatedContainer =
+          updateContainerAndNMToken(rmContainer, false, increase);
+      if (updatedContainer != null) {
+        returnContainerList.add(updatedContainer);
+        i.remove();
+      }
+    }
+    return returnContainerList;
   }
 
+  public synchronized List<Container> pullNewlyIncreasedContainers() {
+    return pullNewlyUpdatedContainers(newlyIncreasedContainers, true);
+  }
+  
+  public synchronized List<Container> pullNewlyDecreasedContainers() {
+    return pullNewlyUpdatedContainers(newlyDecreasedContainers, false);
+  }
+  
+  public synchronized List<NMToken> pullUpdatedNMTokens() {
+    List<NMToken> returnList = new ArrayList<NMToken>(updatedNMTokens);
+    updatedNMTokens.clear();
+    return returnList;
+  }
+
+  public boolean isWaitingForAMContainer() {
+    // The working knowledge is that masterContainer for AM is null as it
+    // itself is the master container.
+    return (!unmanagedAM && appAttempt.getMasterContainer() == null);
+  }
+
+  // Blacklist used for user containers
   public synchronized void updateBlacklist(
       List<String> blacklistAdditions, List<String> blacklistRemovals) {
     if (!isStopped) {
@@ -501,9 +597,19 @@ public class SchedulerApplicationAttempt implements SchedulableEntity {
           blacklistAdditions, blacklistRemovals);
     }
   }
-  
+
+  // Blacklist used for AM containers
+  public synchronized void updateAMBlacklist(
+      List<String> blacklistAdditions, List<String> blacklistRemovals) {
+    if (!isStopped) {
+      this.appSchedulingInfo.updateAMBlacklist(
+          blacklistAdditions, blacklistRemovals);
+    }
+  }
+
   public boolean isBlacklisted(String resourceName) {
-    return this.appSchedulingInfo.isBlacklisted(resourceName);
+    boolean useAMBlacklist = isWaitingForAMContainer();
+    return this.appSchedulingInfo.isBlacklisted(resourceName, useAMBlacklist);
   }
 
   public synchronized int addMissedNonPartitionedRequestSchedulingOpportunity(
@@ -583,14 +689,22 @@ public class SchedulerApplicationAttempt implements SchedulableEntity {
     AggregateAppResourceUsage runningResourceUsage =
         getRunningAggregateAppResourceUsage();
     Resource usedResourceClone =
-        Resources.clone(attemptResourceUsage.getUsed());
+        Resources.clone(attemptResourceUsage.getAllUsed());
     Resource reservedResourceClone =
         Resources.clone(attemptResourceUsage.getReserved());
+    Resource cluster = rmContext.getScheduler().getClusterResource();
+    ResourceCalculator calc = rmContext.getScheduler().getResourceCalculator();
+    float queueUsagePerc = calc.divide(cluster, usedResourceClone, Resources
+        .multiply(cluster, queue.getQueueInfo(false, false).getCapacity()))
+        * 100;
+    float clusterUsagePerc =
+        calc.divide(cluster, usedResourceClone, cluster) * 100;
     return ApplicationResourceUsageReport.newInstance(liveContainers.size(),
         reservedContainers.size(), usedResourceClone, reservedResourceClone,
         Resources.add(usedResourceClone, reservedResourceClone),
         runningResourceUsage.getMemorySeconds(),
-        runningResourceUsage.getVcoreSeconds());
+        runningResourceUsage.getVcoreSeconds(),
+        queueUsagePerc, clusterUsagePerc);
   }
 
   public synchronized Map<ContainerId, RMContainer> getLiveContainersMap() {
@@ -713,7 +827,16 @@ public class SchedulerApplicationAttempt implements SchedulableEntity {
   public ResourceUsage getAppAttemptResourceUsage() {
     return this.attemptResourceUsage;
   }
-  
+
+  @Override
+  public Priority getPriority() {
+    return appPriority;
+  }
+
+  public void setPriority(Priority appPriority) {
+    this.appPriority = appPriority;
+  }
+
   @Override
   public String getId() {
     return getApplicationId().toString();
@@ -733,4 +856,125 @@ public class SchedulerApplicationAttempt implements SchedulableEntity {
     return attemptResourceUsage;
   }
   
+  public synchronized boolean removeIncreaseRequest(NodeId nodeId,
+      Priority priority, ContainerId containerId) {
+    return appSchedulingInfo.removeIncreaseRequest(nodeId, priority,
+        containerId);
+  }
+  
+  public synchronized boolean updateIncreaseRequests(
+      List<SchedContainerChangeRequest> increaseRequests) {
+    return appSchedulingInfo.updateIncreaseRequests(increaseRequests);
+  }
+  
+  private synchronized void changeContainerResource(
+      SchedContainerChangeRequest changeRequest, boolean increase) {
+    if (increase) {
+      appSchedulingInfo.increaseContainer(changeRequest);
+    } else {
+      appSchedulingInfo.decreaseContainer(changeRequest);
+    }
+
+    RMContainer changedRMContainer = changeRequest.getRMContainer(); 
+    changedRMContainer.handle(
+        new RMContainerChangeResourceEvent(changeRequest.getContainerId(),
+            changeRequest.getTargetCapacity(), increase));
+
+    // remove pending and not pulled by AM newly-increased/decreased-containers
+    // and add the new one
+    if (increase) {
+      newlyDecreasedContainers.remove(changeRequest.getContainerId());
+      newlyIncreasedContainers.put(changeRequest.getContainerId(),
+          changedRMContainer);
+    } else {
+      newlyIncreasedContainers.remove(changeRequest.getContainerId());
+      newlyDecreasedContainers.put(changeRequest.getContainerId(),
+          changedRMContainer);
+    }
+  }
+  
+  public synchronized void decreaseContainer(
+      SchedContainerChangeRequest decreaseRequest) {
+    changeContainerResource(decreaseRequest, false);
+  }
+  
+  public synchronized void increaseContainer(
+      SchedContainerChangeRequest increaseRequest) {
+    changeContainerResource(increaseRequest, true);
+  }
+
+  public void setAppAMNodePartitionName(String partitionName) {
+    this.appAMNodePartitionName = partitionName;
+  }
+
+  public String getAppAMNodePartitionName() {
+    return appAMNodePartitionName;
+  }
+
+  public void updateAMContainerDiagnostics(AMState state,
+      String diagnosticMessage) {
+    if (!isWaitingForAMContainer()) {
+      return;
+    }
+    StringBuilder diagnosticMessageBldr = new StringBuilder();
+    diagnosticMessageBldr.append("[");
+    diagnosticMessageBldr.append(fdf.format(System.currentTimeMillis()));
+    diagnosticMessageBldr.append("] ");
+    switch (state) {
+    case INACTIVATED:
+      diagnosticMessageBldr.append(state.diagnosticMessage);
+      if (diagnosticMessage != null) {
+        diagnosticMessageBldr.append(diagnosticMessage);
+      }
+      getPendingAppDiagnosticMessage(diagnosticMessageBldr);
+      break;
+    case ACTIVATED:
+      diagnosticMessageBldr.append(state.diagnosticMessage);
+      if (diagnosticMessage != null) {
+        diagnosticMessageBldr.append(diagnosticMessage);
+      }
+      getActivedAppDiagnosticMessage(diagnosticMessageBldr);
+      break;
+    default:
+      // UNMANAGED , ASSIGNED
+      diagnosticMessageBldr.append(state.diagnosticMessage);
+      break;
+    }
+    appAttempt.updateAMLaunchDiagnostics(diagnosticMessageBldr.toString());
+  }
+
+  protected void getPendingAppDiagnosticMessage(
+      StringBuilder diagnosticMessage) {
+    // Give the specific information which might be applicable for the
+    // respective scheduler
+    // like partitionAMResourcelimit,UserAMResourceLimit, queue'AMResourceLimit
+  }
+
+  protected void getActivedAppDiagnosticMessage(
+      StringBuilder diagnosticMessage) {
+    // Give the specific information which might be applicable for the
+    // respective scheduler
+    // queue's resource usage for specific partition
+  }
+
+  public static enum AMState {
+    UNMANAGED("User launched the Application Master, since it's unmanaged. "),
+    INACTIVATED("Application is added to the scheduler and is not yet activated. "),
+    ACTIVATED("Application is Activated, waiting for resources to be assigned for AM. "),
+    ASSIGNED("Scheduler has assigned a container for AM, waiting for AM "
+        + "container to be launched"),
+    LAUNCHED("AM container is launched, waiting for AM container to Register "
+        + "with RM")
+    ;
+
+    private String diagnosticMessage;
+
+    AMState(String diagnosticMessage) {
+      this.diagnosticMessage = diagnosticMessage;
+    }
+
+    public String getDiagnosticMessage() {
+      return diagnosticMessage;
+    }
+  }
 }

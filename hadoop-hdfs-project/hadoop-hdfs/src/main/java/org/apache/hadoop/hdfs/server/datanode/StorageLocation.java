@@ -54,7 +54,7 @@ public class StorageLocation {
       // drop any (illegal) authority in the URI for backwards compatibility
       this.file = new File(uri.getPath());
     } else {
-      throw new IllegalArgumentException("Unsupported URI schema in " + uri);
+      throw new IllegalArgumentException("Unsupported URI ecPolicy in " + uri);
     }
   }
 
@@ -87,7 +87,7 @@ public class StorageLocation {
 
     if (matcher.matches()) {
       String classString = matcher.group(1);
-      location = matcher.group(2);
+      location = matcher.group(2).trim();
       if (!classString.isEmpty()) {
         storageType =
             StorageType.valueOf(StringUtils.toUpperCase(classString));

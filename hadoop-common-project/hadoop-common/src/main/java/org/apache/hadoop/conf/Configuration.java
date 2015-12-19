@@ -34,7 +34,9 @@ import java.io.Reader;
 import java.io.Writer;
 import java.lang.ref.WeakReference;
 import java.net.InetSocketAddress;
+import java.net.JarURLConnection;
 import java.net.URL;
+import java.net.URLConnection;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -177,7 +179,7 @@ import com.google.common.base.Preconditions;
  * <p>When <tt>conf.get("otherdir")</tt> is called, then <tt>${<i>env.BASE_DIR</i>}</tt>
  * will be resolved to the value of the <tt>${<i>BASE_DIR</i>}</tt> environment variable.
  * It supports <tt>${<i>env.NAME:-default</i>}</tt> and <tt>${<i>env.NAME-default</i>}</tt> notations.
- * The former is resolved to “default” if <tt>${<i>NAME</i>}</tt> environment variable is undefined
+ * The former is resolved to "default" if <tt>${<i>NAME</i>}</tt> environment variable is undefined
  * or its value is empty.
  * The latter behaves the same way only if <tt>${<i>NAME</i>}</tt> is undefined.
  * <p>By default, warnings will be given to any deprecated configuration 
@@ -2531,7 +2533,14 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
     if (url == null) {
       return null;
     }
-    return parse(builder, url.openStream(), url.toString());
+
+    URLConnection connection = url.openConnection();
+    if (connection instanceof JarURLConnection) {
+      // Disable caching for JarURLConnection to avoid sharing JarFile
+      // with other users.
+      connection.setUseCaches(false);
+    }
+    return parse(builder, connection.getInputStream(), url.toString());
   }
 
   private Document parse(DocumentBuilder builder, InputStream is,
@@ -2735,14 +2744,14 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
       to.put(entry.getKey(), entry.getValue());
     }
   }
-  
+
   private void loadProperty(Properties properties, String name, String attr,
       String value, boolean finalParameter, String[] source) {
     if (value != null || allowNullValueProperties) {
+      if (value == null) {
+        value = DEFAULT_STRING_CHECK;
+      }
       if (!finalParameters.contains(attr)) {
-        if (value==null && allowNullValueProperties) {
-          value = DEFAULT_STRING_CHECK;
-        }
         properties.setProperty(attr, value);
         if(source != null) {
           updatingResource.put(attr, source);

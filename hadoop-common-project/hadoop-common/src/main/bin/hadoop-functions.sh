@@ -14,6 +14,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# we need to declare this globally as an array, which can only
+# be done outside of a function
+declare -a HADOOP_SUBCMD_USAGE
+declare -a HADOOP_OPTION_USAGE
+
 ## @description  Print a message to stderr
 ## @audience     public
 ## @stability    stable
@@ -33,6 +38,163 @@ function hadoop_debug
 {
   if [[ -n "${HADOOP_SHELL_SCRIPT_DEBUG}" ]]; then
     echo "DEBUG: $*" 1>&2
+  fi
+}
+
+## @description  Add a subcommand to the usage output
+## @audience     private
+## @stability    evolving
+## @replaceable  no
+## @param        subcommand
+## @param        subcommanddesc
+function hadoop_add_subcommand
+{
+  local subcmd=$1
+  local text=$2
+
+  HADOOP_SUBCMD_USAGE[${HADOOP_SUBCMD_USAGE_COUNTER}]="${subcmd}@${text}"
+  ((HADOOP_SUBCMD_USAGE_COUNTER=HADOOP_SUBCMD_USAGE_COUNTER+1))
+}
+
+## @description  Add an option to the usage output
+## @audience     private
+## @stability    evolving
+## @replaceable  no
+## @param        subcommand
+## @param        subcommanddesc
+function hadoop_add_option
+{
+  local option=$1
+  local text=$2
+
+  HADOOP_OPTION_USAGE[${HADOOP_OPTION_USAGE_COUNTER}]="${option}@${text}"
+  ((HADOOP_OPTION_USAGE_COUNTER=HADOOP_OPTION_USAGE_COUNTER+1))
+}
+
+## @description  Reset the usage information to blank
+## @audience     private
+## @stability    evolving
+## @replaceable  no
+function hadoop_reset_usage
+{
+  HADOOP_SUBCMD_USAGE=()
+  HADOOP_OPTION_USAGE=()
+  HADOOP_SUBCMD_USAGE_COUNTER=0
+  HADOOP_OPTION_USAGE_COUNTER=0
+}
+
+## @description  Print a screen-size aware two-column output
+## @audience     private
+## @stability    evolving
+## @replaceable  no
+## @param        array
+function hadoop_generic_columnprinter
+{
+  declare -a input=("$@")
+  declare -i i=0
+  declare -i counter=0
+  declare line
+  declare text
+  declare option
+  declare giventext
+  declare -i maxoptsize
+  declare -i foldsize
+  declare -a tmpa
+  declare numcols
+
+  if [[ -n "${COLUMNS}" ]]; then
+    numcols=${COLUMNS}
+  else
+    numcols=$(tput cols) 2>/dev/null
+  fi
+
+  if [[ -z "${numcols}"
+     || ! "${numcols}" =~ ^[0-9]+$ ]]; then
+    numcols=75
+  else
+    ((numcols=numcols-5))
+  fi
+
+  while read -r line; do
+    tmpa[${counter}]=${line}
+    ((counter=counter+1))
+    option=$(echo "${line}" | cut -f1 -d'@')
+    if [[ ${#option} -gt ${maxoptsize} ]]; then
+      maxoptsize=${#option}
+    fi
+  done < <(for text in "${input[@]}"; do
+    echo "${text}"
+  done | sort)
+
+  i=0
+  ((foldsize=numcols-maxoptsize))
+
+  until [[ $i -eq ${#tmpa[@]} ]]; do
+    option=$(echo "${tmpa[$i]}" | cut -f1 -d'@')
+    giventext=$(echo "${tmpa[$i]}" | cut -f2 -d'@')
+
+    while read -r line; do
+      printf "%-${maxoptsize}s   %-s\n" "${option}" "${line}"
+      option=" "
+    done < <(echo "${giventext}"| fold -s -w ${foldsize})
+    ((i=i+1))
+  done
+}
+
+## @description  generate standard usage output
+## @description  and optionally takes a class
+## @audience     private
+## @stability    evolving
+## @replaceable  no
+## @param        execname
+## @param        true|false
+## @param        [text to use in place of SUBCOMMAND]
+function hadoop_generate_usage
+{
+  local cmd=$1
+  local takesclass=$2
+  local subcmdtext=${3:-"SUBCOMMAND"}
+  local haveoptions
+  local optstring
+  local havesubs
+  local subcmdstring
+
+  cmd=${cmd##*/}
+
+  if [[ -n "${HADOOP_OPTION_USAGE_COUNTER}"
+        && "${HADOOP_OPTION_USAGE_COUNTER}" -gt 0 ]]; then
+    haveoptions=true
+    optstring=" [OPTIONS]"
+  fi
+
+  if [[ -n "${HADOOP_SUBCMD_USAGE_COUNTER}"
+        && "${HADOOP_SUBCMD_USAGE_COUNTER}" -gt 0 ]]; then
+    havesubs=true
+    subcmdstring=" ${subcmdtext} [${subcmdtext} OPTIONS]"
+  fi
+
+  echo "Usage: ${cmd}${optstring}${subcmdstring}"
+  if [[ ${takesclass} = true ]]; then
+    echo " or    ${cmd}${optstring} CLASSNAME [CLASSNAME OPTIONS]"
+    echo "  where CLASSNAME is a user-provided Java class"
+  fi
+
+  if [[ "${haveoptions}" = true ]]; then
+    echo ""
+    echo "  OPTIONS is none or any of:"
+    echo ""
+
+    hadoop_generic_columnprinter "${HADOOP_OPTION_USAGE[@]}"
+  fi
+
+  if [[ "${havesubs}" = true ]]; then
+    echo ""
+    echo "  ${subcmdtext} is one of:"
+    echo ""
+
+    hadoop_generic_columnprinter "${HADOOP_SUBCMD_USAGE[@]}"
+    echo ""
+    echo "${subcmdtext} may print help when invoked w/o parameters or with -h."
   fi
 }
 
@@ -71,6 +233,10 @@ function hadoop_bootstrap
   # the root of the Hadoop installation
   # See HADOOP-6255 for the expected directory structure layout
 
+  if [[ -n "${DEFAULT_LIBEXEC_DIR}" ]]; then
+    hadoop_error "WARNING: DEFAULT_LIBEXEC_DIR ignored. It has been replaced by HADOOP_DEFAULT_LIBEXEC_DIR."
+  fi
+
   # By now, HADOOP_LIBEXEC_DIR should have been defined upstream
   # We can piggyback off of that to figure out where the default
   # HADOOP_FREFIX should be.  This allows us to run without
@@ -98,8 +264,13 @@ function hadoop_bootstrap
   YARN_LIB_JARS_DIR=${YARN_LIB_JARS_DIR:-"share/hadoop/yarn/lib"}
   MAPRED_DIR=${MAPRED_DIR:-"share/hadoop/mapreduce"}
   MAPRED_LIB_JARS_DIR=${MAPRED_LIB_JARS_DIR:-"share/hadoop/mapreduce/lib"}
-  # setup a default TOOL_PATH
-  TOOL_PATH=${TOOL_PATH:-${HADOOP_PREFIX}/share/hadoop/tools/lib/*}
+
+  # setup a default HADOOP_TOOLS_PATH
+  hadoop_deprecate_envvar TOOL_PATH HADOOP_TOOLS_PATH
+  HADOOP_TOOLS_PATH=${HADOOP_TOOLS_PATH:-${HADOOP_PREFIX}/share/hadoop/tools/lib/*}
+
+  # usage output set to zero
+  hadoop_reset_usage
 
   export HADOOP_OS_TYPE=${HADOOP_OS_TYPE:-$(uname -s)}
 
@@ -193,6 +364,7 @@ function hadoop_import_shellprofiles
 
   if [[ -d "${HADOOP_LIBEXEC_DIR}/shellprofile.d" ]]; then
     files1=(${HADOOP_LIBEXEC_DIR}/shellprofile.d/*.sh)
+    hadoop_debug "shellprofiles: ${files1[*]}"
   else
     hadoop_error "WARNING: ${HADOOP_LIBEXEC_DIR}/shellprofile.d doesn't exist. Functionality may not work."
   fi
@@ -203,7 +375,8 @@ function hadoop_import_shellprofiles
 
   for i in "${files1[@]}" "${files2[@]}"
   do
-    if [[ -n "${i}" ]]; then
+    if [[ -n "${i}"
+      && -f "${i}" ]]; then
       hadoop_debug "Profiles: importing ${i}"
       . "${i}"
     fi
@@ -325,7 +498,30 @@ function hadoop_basic_init
     export HADOOP_MAPRED_HOME="${HADOOP_PREFIX}"
   fi
 
+  if [[ ! -d "${HADOOP_COMMON_HOME}" ]]; then
+    hadoop_error "ERROR: Invalid HADOOP_COMMON_HOME"
+    exit 1
+  fi
+
+  if [[ ! -d "${HADOOP_HDFS_HOME}" ]]; then
+    hadoop_error "ERROR: Invalid HADOOP_HDFS_HOME"
+    exit 1
+  fi
+
+  if [[ ! -d "${HADOOP_YARN_HOME}" ]]; then
+    hadoop_error "ERROR: Invalid HADOOP_YARN_HOME"
+    exit 1
+  fi
+
+  if [[ ! -d "${HADOOP_MAPRED_HOME}" ]]; then
+    hadoop_error "ERROR: Invalid HADOOP_MAPRED_HOME"
+    exit 1
+  fi
+
+  # if for some reason the shell doesn't have $USER defined
+  # let's define it as 'hadoop'
   HADOOP_IDENT_STRING=${HADOOP_IDENT_STRING:-$USER}
+  HADOOP_IDENT_STRING=${HADOOP_IDENT_STRING:-hadoop}
   HADOOP_LOG_DIR=${HADOOP_LOG_DIR:-"${HADOOP_PREFIX}/logs"}
   HADOOP_LOGFILE=${HADOOP_LOGFILE:-hadoop.log}
   HADOOP_LOGLEVEL=${HADOOP_LOGLEVEL:-INFO}
@@ -426,6 +622,8 @@ function hadoop_connect_to_hosts
 {
   # shellcheck disable=SC2124
   local params="$@"
+  local slave_file
+  local tmpslvnames
 
   #
   # ssh (or whatever) to a host
@@ -434,12 +632,8 @@ function hadoop_connect_to_hosts
   if [[ -n "${HADOOP_SLAVES}" && -n "${HADOOP_SLAVE_NAMES}" ]] ; then
     hadoop_error "ERROR: Both HADOOP_SLAVES and HADOOP_SLAVE_NAME were defined. Aborting."
     exit 1
-  fi
-
-  if [[ -n "${HADOOP_SLAVE_NAMES}" ]] ; then
-    SLAVE_NAMES=${HADOOP_SLAVE_NAMES}
-  else
-    SLAVE_FILE=${HADOOP_SLAVES:-${HADOOP_CONF_DIR}/slaves}
+  elif [[ -z "${HADOOP_SLAVE_NAMES}" ]]; then
+    slave_file=${HADOOP_SLAVES:-${HADOOP_CONF_DIR}/slaves}
   fi
 
   # if pdsh is available, let's use it.  otherwise default
@@ -449,17 +643,18 @@ function hadoop_connect_to_hosts
       # if we were given a file, just let pdsh deal with it.
       # shellcheck disable=SC2086
       PDSH_SSH_ARGS_APPEND="${HADOOP_SSH_OPTS}" pdsh \
-      -f "${HADOOP_SSH_PARALLEL}" -w ^"${SLAVE_FILE}" $"${@// /\\ }" 2>&1
+      -f "${HADOOP_SSH_PARALLEL}" -w ^"${slave_file}" $"${@// /\\ }" 2>&1
     else
       # no spaces allowed in the pdsh arg host list
       # shellcheck disable=SC2086
-      SLAVE_NAMES=$(echo ${SLAVE_NAMES} | tr -s ' ' ,)
+      tmpslvnames=$(echo ${SLAVE_NAMES} | tr -s ' ' ,)
       PDSH_SSH_ARGS_APPEND="${HADOOP_SSH_OPTS}" pdsh \
-      -f "${HADOOP_SSH_PARALLEL}" -w "${SLAVE_NAMES}" $"${@// /\\ }" 2>&1
+        -f "${HADOOP_SSH_PARALLEL}" \
+        -w "${tmpslvnames}" $"${@// /\\ }" 2>&1
     fi
   else
-    if [[ -z "${SLAVE_NAMES}" ]]; then
-      SLAVE_NAMES=$(sed 's/#.*$//;/^$/d' "${SLAVE_FILE}")
+    if [[ -z "${HADOOP_SLAVE_NAMES}" ]]; then
+      HADOOP_SLAVE_NAMES=$(sed 's/#.*$//;/^$/d' "${slave_file}")
     fi
     hadoop_connect_to_hosts_without_pdsh "${params}"
   fi
@@ -476,7 +671,7 @@ function hadoop_connect_to_hosts_without_pdsh
 {
   # shellcheck disable=SC2124
   local params="$@"
-  local slaves=(${SLAVE_NAMES})
+  local slaves=(${HADOOP_SLAVE_NAMES})
   for (( i = 0; i < ${#slaves[@]}; i++ ))
   do
     if (( i != 0 && i % HADOOP_SSH_PARALLEL == 0 )); then
@@ -505,7 +700,7 @@ function hadoop_common_slave_mode_execute
   # to prevent loops
   # Also remove --hostnames and --hosts along with arg values
   local argsSize=${#argv[@]};
-  for (( i = 0; i < $argsSize; i++ ))
+  for (( i = 0; i < argsSize; i++ ))
   do
     if [[ "${argv[$i]}" =~ ^--slaves$ ]]; then
       unset argv[$i]
@@ -516,6 +711,10 @@ function hadoop_common_slave_mode_execute
       unset argv[$i];
     fi
   done
+  if [[ ${QATESTMODE} = true ]]; then
+    echo "${argv[@]}"
+    return
+  fi
   hadoop_connect_to_hosts -- "${argv[@]}"
 }
 
@@ -562,8 +761,12 @@ function hadoop_add_param
   # delimited
   #
   if [[ ! ${!1} =~ $2 ]] ; then
-    # shellcheck disable=SC2086
-    eval $1="'${!1} $3'"
+    #shellcheck disable=SC2140
+    eval "$1"="'${!1} $3'"
+    if [[ ${!1:0:1} = ' ' ]]; then
+      #shellcheck disable=SC2140
+      eval "$1"="'${!1# }'"
+    fi
     hadoop_debug "$1 accepted $3"
   else
     hadoop_debug "$1 declined $3"
@@ -601,7 +804,8 @@ function hadoop_add_classpath
   # for wildcard at end, we can
   # at least check the dir exists
   if [[ $1 =~ ^.*\*$ ]]; then
-    local mp=$(dirname "$1")
+    local mp
+    mp=$(dirname "$1")
     if [[ ! -d "${mp}" ]]; then
       hadoop_debug "Rejected CLASSPATH: $1 (not a dir)"
       return 1
@@ -660,7 +864,7 @@ function hadoop_add_colonpath
       hadoop_debug "Prepend colonpath($1): $2"
     else
       # shellcheck disable=SC2086
-      eval $1+="'$2'"
+      eval $1+=":'$2'"
       hadoop_debug "Append colonpath($1): $2"
     fi
     return 0
@@ -699,11 +903,14 @@ function hadoop_add_javalibpath
 ## @return       1 = failure (doesn't exist or some other reason)
 function hadoop_add_ldlibpath
 {
+  local status
   # specialized function for a common use case
   hadoop_add_colonpath LD_LIBRARY_PATH "$1" "$2"
+  status=$?
 
   # note that we export this
   export LD_LIBRARY_PATH
+  return ${status}
 }
 
 ## @description  Add the common/core Hadoop components to the
@@ -711,23 +918,62 @@ function hadoop_add_ldlibpath
 ## @audience     private
 ## @stability    evolving
 ## @replaceable  yes
+## @returns      1 on failure, may exit
+## @returns      0 on success
 function hadoop_add_common_to_classpath
 {
   #
   # get all of the common jars+config in the path
   #
 
+  if [[ -z "${HADOOP_COMMON_HOME}"
+    || -z "${HADOOP_COMMON_DIR}"
+    || -z "${HADOOP_COMMON_LIB_JARS_DIR}" ]]; then
+    hadoop_debug "COMMON_HOME=${HADOOP_COMMON_HOME}"
+    hadoop_debug "COMMON_DIR=${HADOOP_COMMON_DIR}"
+    hadoop_debug "COMMON_LIB_JARS_DIR=${HADOOP_COMMON_LIB_JARS_DIR}"
+    hadoop_error "ERROR: HADOOP_COMMON_HOME or related vars are not configured."
+    exit 1
+  fi
+
   # developers
   if [[ -n "${HADOOP_ENABLE_BUILD_PATHS}" ]]; then
     hadoop_add_classpath "${HADOOP_COMMON_HOME}/hadoop-common/target/classes"
   fi
 
-  if [[ -d "${HADOOP_COMMON_HOME}/${HADOOP_COMMON_DIR}/webapps" ]]; then
-    hadoop_add_classpath "${HADOOP_COMMON_HOME}/${HADOOP_COMMON_DIR}"
-  fi
-
   hadoop_add_classpath "${HADOOP_COMMON_HOME}/${HADOOP_COMMON_LIB_JARS_DIR}"'/*'
   hadoop_add_classpath "${HADOOP_COMMON_HOME}/${HADOOP_COMMON_DIR}"'/*'
+}
+
+## @description  Add the HADOOP_TOOLS_PATH to the classpath
+## @description  environment
+## @audience     private
+## @stability    evolving
+## @replaceable  yes
+function hadoop_add_to_classpath_toolspath
+{
+  declare -a array
+  declare -i c=0
+  declare -i j
+  declare -i i
+  declare idx
+
+  if [[ -n "${HADOOP_TOOLS_PATH}" ]]; then
+    hadoop_debug "Adding HADOOP_TOOLS_PATH to CLASSPATH"
+    oldifs=${IFS}
+    IFS=:
+    for idx in ${HADOOP_TOOLS_PATH}; do
+      array[${c}]=${idx}
+      ((c=c+1))
+    done
+    IFS=${oldifs}
+    ((j=c-1)) || ${QATESTMODE}
+
+    for ((i=0; i<=j; i++)); do
+      hadoop_add_classpath "${array[$i]}" after
+    done
+
+  fi
 }
 
 ## @description  Add the user's custom classpath settings to the
@@ -744,27 +990,29 @@ function hadoop_add_to_classpath_userpath
   # set env-var HADOOP_USER_CLASSPATH_FIRST
   # we'll also dedupe it, because we're cool like that.
   #
-  local c
-  local array
-  local i
-  local j
-  let c=0
+  declare -a array
+  declare -i c=0
+  declare -i j
+  declare -i i
+  declare idx
 
   if [[ -n "${HADOOP_CLASSPATH}" ]]; then
     # I wonder if Java runs on VMS.
-    for i in $(echo "${HADOOP_CLASSPATH}" | tr : '\n'); do
-      array[$c]=$i
-      let c+=1
+    for idx in $(echo "${HADOOP_CLASSPATH}" | tr : '\n'); do
+      array[${c}]=${idx}
+      ((c=c+1))
     done
-    let j=c-1
+
+    # bats gets confused by j getting set to 0
+    ((j=c-1)) || ${QATESTMODE}
 
     if [[ -z "${HADOOP_USE_CLIENT_CLASSLOADER}" ]]; then
       if [[ -z "${HADOOP_USER_CLASSPATH_FIRST}" ]]; then
-        for ((i=j; i>=0; i--)); do
+        for ((i=0; i<=j; i++)); do
           hadoop_add_classpath "${array[$i]}" after
         done
       else
-        for ((i=0; i<=j; i++)); do
+        for ((i=j; i>=0; i--)); do
           hadoop_add_classpath "${array[$i]}" before
         done
       fi
@@ -786,18 +1034,32 @@ function hadoop_os_tricks
     Darwin)
       if [[ -z "${JAVA_HOME}" ]]; then
         if [[ -x /usr/libexec/java_home ]]; then
-          export JAVA_HOME="$(/usr/libexec/java_home)"
+          JAVA_HOME="$(/usr/libexec/java_home)"
+          export JAVA_HOME
         else
-          export JAVA_HOME=/Library/Java/Home
+          JAVA_HOME=/Library/Java/Home
+          export JAVA_HOME
         fi
       fi
     ;;
     Linux)
-      bindv6only=$(/sbin/sysctl -n net.ipv6.bindv6only 2> /dev/null)
+
+      # Newer versions of glibc use an arena memory allocator that
+      # causes virtual # memory usage to explode. This interacts badly
+      # with the many threads that we use in Hadoop. Tune the variable
+      # down to prevent vmem explosion.
+      export MALLOC_ARENA_MAX=${MALLOC_ARENA_MAX:-4}
+      # we put this in QA test mode off so that non-Linux can test
+      if [[ "${QATESTMODE}" = true ]]; then
+        return
+      fi
 
       # NOTE! HADOOP_ALLOW_IPV6 is a developer hook.  We leave it
       # undocumented in hadoop-env.sh because we don't want users to
       # shoot themselves in the foot while devs make IPv6 work.
+
+      bindv6only=$(/sbin/sysctl -n net.ipv6.bindv6only 2> /dev/null)
+
       if [[ -n "${bindv6only}" ]] &&
          [[ "${bindv6only}" -eq "1" ]] &&
          [[ "${HADOOP_ALLOW_IPV6}" != "yes" ]]; then
@@ -806,11 +1068,6 @@ function hadoop_os_tricks
         hadoop_error "ERROR: For more info: http://wiki.apache.org/hadoop/HadoopIPv6"
         exit 1
       fi
-      # Newer versions of glibc use an arena memory allocator that
-      # causes virtual # memory usage to explode. This interacts badly
-      # with the many threads that we use in Hadoop. Tune the variable
-      # down to prevent vmem explosion.
-      export MALLOC_ARENA_MAX=${MALLOC_ARENA_MAX:-4}
     ;;
     CYGWIN*)
       # Flag that we're running on Cygwin to trigger path translation later.
@@ -854,7 +1111,7 @@ function hadoop_finalize_libpaths
   if [[ -n "${JAVA_LIBRARY_PATH}" ]]; then
     hadoop_translate_cygwin_path JAVA_LIBRARY_PATH
     hadoop_add_param HADOOP_OPTS java.library.path \
-    "-Djava.library.path=${JAVA_LIBRARY_PATH}"
+      "-Djava.library.path=${JAVA_LIBRARY_PATH}"
     export LD_LIBRARY_PATH
   fi
 }
@@ -1003,6 +1260,7 @@ function hadoop_exit_with_usage
   if [[ -z $exitcode ]]; then
     exitcode=1
   fi
+  # shellcheck disable=SC2034
   if declare -F hadoop_usage >/dev/null ; then
     hadoop_usage
   elif [[ -x /usr/bin/cowsay ]]; then
@@ -1284,7 +1542,7 @@ function hadoop_start_secure_daemon
   local daemonname=$1
   local class=$2
 
-  # pid file to create for our deamon
+  # pid file to create for our daemon
   local daemonpidfile=$3
 
   # where to send stdout. jsvc has bad habits so this *may* be &1
@@ -1299,6 +1557,7 @@ function hadoop_start_secure_daemon
   hadoop_rotate_log "${daemonoutfile}"
   hadoop_rotate_log "${daemonerrfile}"
 
+  # shellcheck disable=SC2153
   jsvc="${JSVC_HOME}/jsvc"
   if [[ ! -f "${jsvc}" ]]; then
     hadoop_error "JSVC_HOME is not set or set incorrectly. jsvc is required to run secure"
@@ -1325,6 +1584,7 @@ function hadoop_start_secure_daemon
     hadoop_error "ERROR:  Cannot write ${daemonname} pid ${privpidfile}."
   fi
 
+  # shellcheck disable=SC2086
   exec "${jsvc}" \
     "-Dproc_${daemonname}" \
     -outfile "${daemonoutfile}" \
@@ -1443,6 +1703,7 @@ function hadoop_stop_daemon
   shift 2
 
   local pid
+  local cur_pid
 
   if [[ -f "${pidfile}" ]]; then
     pid=$(cat "$pidfile")
@@ -1456,7 +1717,12 @@ function hadoop_stop_daemon
     if ps -p "${pid}" > /dev/null 2>&1; then
       hadoop_error "ERROR: Unable to kill ${pid}"
     else
-      rm -f "${pidfile}" >/dev/null 2>&1
+      cur_pid=$(cat "$pidfile")
+      if [[ "${pid}" = "${cur_pid}" ]]; then
+        rm -f "${pidfile}" >/dev/null 2>&1
+      else
+        hadoop_error "WARNING: pid has changed for ${cmd}, skip deleting pid file"
+      fi
     fi
   fi
 }
@@ -1478,9 +1744,31 @@ function hadoop_stop_secure_daemon
   shift 3
   local ret
 
+  local daemon_pid
+  local priv_pid
+  local cur_daemon_pid
+  local cur_priv_pid
+
+  daemon_pid=$(cat "$daemonpidfile")
+  priv_pid=$(cat "$privpidfile")
+
   hadoop_stop_daemon "${command}" "${daemonpidfile}"
   ret=$?
-  rm -f "${daemonpidfile}" "${privpidfile}" 2>/dev/null
+
+  cur_daemon_pid=$(cat "$daemonpidfile")
+  cur_priv_pid=$(cat "$privpidfile")
+
+  if [[ "${daemon_pid}" = "${cur_daemon_pid}" ]]; then
+    rm -f "${daemonpidfile}" >/dev/null 2>&1
+  else
+    hadoop_error "WARNING: daemon pid has changed for ${command}, skip deleting daemon pid file"
+  fi
+
+  if [[ "${priv_pid}" = "${cur_priv_pid}" ]]; then
+    rm -f "${privpidfile}" >/dev/null 2>&1
+  else
+    hadoop_error "WARNING: priv pid has changed for ${command}, skip deleting priv pid file"
+  fi
   return ${ret}
 }
 
@@ -1616,7 +1904,7 @@ function hadoop_verify_user
   local uservar="HADOOP_${command}_USER"
 
   if [[ -n ${!uservar} ]]; then
-    if [[ ${!uservar} !=  ${USER} ]]; then
+    if [[ ${!uservar} !=  "${USER}" ]]; then
       hadoop_error "ERROR: ${command} can only be executed by ${!uservar}."
       exit 1
     fi
@@ -1639,4 +1927,102 @@ function hadoop_do_classpath_subcommand
     echo "${CLASSPATH}"
     exit 0
   fi
+}
+
+## @description  generic shell script opton parser.  sets
+## @description  HADOOP_PARSE_COUNTER to set number the
+## @description  caller should shift
+## @audience     private
+## @stability    evolving
+## @replaceable  yes
+## @param        [parameters, typically "$@"]
+function hadoop_parse_args
+{
+  HADOOP_DAEMON_MODE="default"
+  HADOOP_PARSE_COUNTER=0
+
+  # not all of the options supported here are supported by all commands
+  # however these are:
+  hadoop_add_option "--config dir" "Hadoop config directory"
+  hadoop_add_option "--debug" "turn on shell script debug mode"
+  hadoop_add_option "--help" "usage information"
+
+  while true; do
+    hadoop_debug "hadoop_parse_args: processing $1"
+    case $1 in
+      --buildpaths)
+        # shellcheck disable=SC2034
+        HADOOP_ENABLE_BUILD_PATHS=true
+        shift
+        ((HADOOP_PARSE_COUNTER=HADOOP_PARSE_COUNTER+1))
+      ;;
+      --config)
+        shift
+        confdir=$1
+        shift
+        ((HADOOP_PARSE_COUNTER=HADOOP_PARSE_COUNTER+2))
+        if [[ -d "${confdir}" ]]; then
+          # shellcheck disable=SC2034
+          HADOOP_CONF_DIR="${confdir}"
+        elif [[ -z "${confdir}" ]]; then
+          hadoop_error "ERROR: No parameter provided for --config "
+          hadoop_exit_with_usage 1
+        else
+          hadoop_error "ERROR: Cannot find configuration directory \"${confdir}\""
+          hadoop_exit_with_usage 1
+        fi
+      ;;
+      --daemon)
+        shift
+        HADOOP_DAEMON_MODE=$1
+        shift
+        ((HADOOP_PARSE_COUNTER=HADOOP_PARSE_COUNTER+2))
+        if [[ -z "${HADOOP_DAEMON_MODE}" || \
+          ! "${HADOOP_DAEMON_MODE}" =~ ^st(art|op|atus)$ ]]; then
+          hadoop_error "ERROR: --daemon must be followed by either \"start\", \"stop\", or \"status\"."
+          hadoop_exit_with_usage 1
+        fi
+      ;;
+      --debug)
+        shift
+        # shellcheck disable=SC2034
+        HADOOP_SHELL_SCRIPT_DEBUG=true
+        ((HADOOP_PARSE_COUNTER=HADOOP_PARSE_COUNTER+1))
+      ;;
+      --help|-help|-h|help|--h|--\?|-\?|\?)
+        hadoop_exit_with_usage 0
+      ;;
+      --hostnames)
+        shift
+        # shellcheck disable=SC2034
+        HADOOP_SLAVE_NAMES="$1"
+        shift
+        ((HADOOP_PARSE_COUNTER=HADOOP_PARSE_COUNTER+2))
+      ;;
+      --hosts)
+        shift
+        hadoop_populate_slaves_file "$1"
+        shift
+        ((HADOOP_PARSE_COUNTER=HADOOP_PARSE_COUNTER+2))
+      ;;
+      --loglevel)
+        shift
+        # shellcheck disable=SC2034
+        HADOOP_LOGLEVEL="$1"
+        shift
+        ((HADOOP_PARSE_COUNTER=HADOOP_PARSE_COUNTER+2))
+      ;;
+      --slaves)
+        shift
+        # shellcheck disable=SC2034
+        HADOOP_SLAVE_MODE=true
+        ((HADOOP_PARSE_COUNTER=HADOOP_PARSE_COUNTER+1))
+      ;;
+      *)
+        break
+      ;;
+    esac
+  done
+
+  hadoop_debug "hadoop_parse: asking caller to skip ${HADOOP_PARSE_COUNTER}"
 }

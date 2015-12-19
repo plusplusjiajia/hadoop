@@ -49,6 +49,7 @@ import org.apache.hadoop.fs.permission.FsAction;
 import org.apache.hadoop.fs.permission.FsPermission;
 import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.FS_DEFAULT_NAME_KEY;
 import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.FS_DEFAULT_NAME_DEFAULT;
+
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.ipc.RpcClientException;
 import org.apache.hadoop.ipc.RpcServerException;
@@ -58,6 +59,9 @@ import org.apache.hadoop.security.AccessControlException;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.util.ShutdownHookManager;
+
+import com.google.common.base.Preconditions;
+import org.apache.htrace.core.Tracer;
 
 /**
  * The FileContext class provides an interface for users of the Hadoop
@@ -161,7 +165,7 @@ import org.apache.hadoop.util.ShutdownHookManager;
  */
 
 @InterfaceAudience.Public
-@InterfaceStability.Evolving /*Evolving for a release,to be changed to Stable */
+@InterfaceStability.Stable
 public class FileContext {
   
   public static final Log LOG = LogFactory.getLog(FileContext.class);
@@ -219,12 +223,14 @@ public class FileContext {
   private final Configuration conf;
   private final UserGroupInformation ugi;
   final boolean resolveSymlinks;
+  private final Tracer tracer;
 
   private FileContext(final AbstractFileSystem defFs,
     final FsPermission theUmask, final Configuration aConf) {
     defaultFS = defFs;
     umask = FsPermission.getUMask(aConf);
     conf = aConf;
+    tracer = FsTracer.get(aConf);
     try {
       ugi = UserGroupInformation.getCurrentUser();
     } catch (IOException e) {
@@ -262,6 +268,7 @@ public class FileContext {
    * has been deliberately declared private.
    */
   Path fixRelativePart(Path p) {
+    Preconditions.checkNotNull(p, "path cannot be null");
     if (p.isUriPathAbsolute()) {
       return p;
     } else {
@@ -2689,6 +2696,25 @@ public class FileContext {
   }
 
   /**
+   * Query the effective storage policy ID for the given file or directory.
+   *
+   * @param src file or directory path.
+   * @return storage policy for give file.
+   * @throws IOException
+   */
+  public BlockStoragePolicySpi getStoragePolicy(Path path) throws IOException {
+    final Path absF = fixRelativePart(path);
+    return new FSLinkResolver<BlockStoragePolicySpi>() {
+      @Override
+      public BlockStoragePolicySpi next(final AbstractFileSystem fs,
+          final Path p)
+          throws IOException {
+        return fs.getStoragePolicy(p);
+      }
+    }.resolve(this, absF);
+  }
+
+  /**
    * Retrieve all the storage policies supported by this file system.
    *
    * @return all storage policies supported by this filesystem.
@@ -2697,5 +2723,9 @@ public class FileContext {
   public Collection<? extends BlockStoragePolicySpi> getAllStoragePolicies()
       throws IOException {
     return defaultFS.getAllStoragePolicies();
+  }
+
+  Tracer getTracer() {
+    return tracer;
   }
 }

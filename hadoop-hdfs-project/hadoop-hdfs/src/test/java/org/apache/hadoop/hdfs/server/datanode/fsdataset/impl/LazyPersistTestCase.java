@@ -264,11 +264,12 @@ public abstract class LazyPersistTestCase {
     if (useSCR) {
       conf.setBoolean(HdfsClientConfigKeys.Read.ShortCircuit.KEY, true);
       // Do not share a client context across tests.
-      conf.set(DFS_CLIENT_CONTEXT, UUID.randomUUID().toString());
+      conf.set(HdfsClientConfigKeys.DFS_CLIENT_CONTEXT, UUID.randomUUID().toString());
       conf.set(DFS_BLOCK_LOCAL_PATH_ACCESS_USER_KEY,
           UserGroupInformation.getCurrentUser().getShortUserName());
       if (useLegacyBlockReaderLocal) {
-        conf.setBoolean(DFS_CLIENT_USE_LEGACY_BLOCKREADERLOCAL, true);
+        conf.setBoolean(
+            HdfsClientConfigKeys.DFS_CLIENT_USE_LEGACY_BLOCKREADERLOCAL, true);
       } else {
         sockDir = new TemporarySocketDirectory();
         conf.set(DFS_DOMAIN_SOCKET_PATH_KEY, new File(sockDir.getDir(),
@@ -451,7 +452,7 @@ public abstract class LazyPersistTestCase {
     triggerBlockReport();
 
     while(
-      DataNodeTestUtils.getPendingAsyncDeletions(cluster.getDataNodes().get(0))
+        cluster.getFsDatasetTestUtils(0).getPendingAsyncDeletions()
         > 0L){
       Thread.sleep(1000);
     }
@@ -479,6 +480,7 @@ public abstract class LazyPersistTestCase {
 
   protected final void verifyRamDiskJMXMetric(String metricName,
       long expectedValue) throws Exception {
+    waitForMetric(metricName, (int)expectedValue);
     assertEquals(expectedValue, Integer.parseInt(jmx.getValue(metricName)));
   }
 
@@ -509,20 +511,7 @@ public abstract class LazyPersistTestCase {
 
   protected void waitForMetric(final String metricName, final int expectedValue)
       throws TimeoutException, InterruptedException {
-    GenericTestUtils.waitFor(new Supplier<Boolean>() {
-      @Override
-      public Boolean get() {
-        try {
-          final int currentValue = Integer.parseInt(jmx.getValue(metricName));
-          LOG.info("Waiting for " + metricName +
-                       " to reach value " + expectedValue +
-                       ", current value = " + currentValue);
-          return currentValue == expectedValue;
-        } catch (Exception e) {
-          throw new UnhandledException("Test failed due to unexpected exception", e);
-        }
-      }
-    }, 1000, Integer.MAX_VALUE);
+    DFSTestUtil.waitForMetric(jmx, metricName, expectedValue);
   }
 
   protected void triggerEviction(DataNode dn) {

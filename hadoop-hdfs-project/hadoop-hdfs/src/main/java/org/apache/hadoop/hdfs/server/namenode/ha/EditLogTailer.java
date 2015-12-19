@@ -260,7 +260,7 @@ public class EditLogTailer {
         throw elie;
       } finally {
         if (editsLoaded > 0 || LOG.isDebugEnabled()) {
-          LOG.info(String.format("Loaded %d edits starting from txid %d ",
+          LOG.debug(String.format("Loaded %d edits starting from txid %d ",
               editsLoaded, lastTxnId));
         }
       }
@@ -372,6 +372,8 @@ public class EditLogTailer {
           } finally {
             namesystem.cpUnlock();
           }
+          //Update NameDirSize Metric
+          namesystem.getFSImage().getStorage().updateNameDirSize();
         } catch (EditLogInputException elie) {
           LOG.warn("Error while reading edits from disk. Will try again.", elie);
         } catch (InterruptedException ie) {

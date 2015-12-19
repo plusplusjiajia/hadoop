@@ -46,7 +46,7 @@ import org.apache.hadoop.hdfs.protocol.proto.DatanodeProtocolProtos.RegisterData
 import org.apache.hadoop.hdfs.protocol.proto.DatanodeProtocolProtos.ReportBadBlocksRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.DatanodeProtocolProtos.StorageBlockReportProto;
 import org.apache.hadoop.hdfs.protocol.proto.DatanodeProtocolProtos.StorageReceivedDeletedBlocksProto;
-import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.VersionRequestProto;
+import org.apache.hadoop.hdfs.protocol.proto.HdfsServerProtos.VersionRequestProto;
 import org.apache.hadoop.hdfs.server.protocol.BlockReportContext;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeCommand;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeProtocol;
@@ -139,7 +139,7 @@ public class DatanodeProtocolClientSideTranslatorPB implements
         .setXmitsInProgress(xmitsInProgress).setXceiverCount(xceiverCount)
         .setFailedVolumes(failedVolumes)
         .setRequestFullBlockReportLease(requestFullBlockReportLease);
-    builder.addAllReports(PBHelper.convertStorageReports(reports));
+    builder.addAllReports(PBHelperClient.convertStorageReports(reports));
     if (cacheCapacity != 0) {
       builder.setCacheCapacity(cacheCapacity);
     }
@@ -163,8 +163,11 @@ public class DatanodeProtocolClientSideTranslatorPB implements
       index++;
     }
     RollingUpgradeStatus rollingUpdateStatus = null;
-    if (resp.hasRollingUpgradeStatus()) {
-      rollingUpdateStatus = PBHelper.convert(resp.getRollingUpgradeStatus());
+    // Use v2 semantics if available.
+    if (resp.hasRollingUpgradeStatusV2()) {
+      rollingUpdateStatus = PBHelperClient.convert(resp.getRollingUpgradeStatusV2());
+    } else if (resp.hasRollingUpgradeStatus()) {
+      rollingUpdateStatus = PBHelperClient.convert(resp.getRollingUpgradeStatus());
     }
     return new HeartbeatResponse(cmds, PBHelper.convert(resp.getHaStatus()),
         rollingUpdateStatus, resp.getFullBlockReportLeaseId());
@@ -183,7 +186,7 @@ public class DatanodeProtocolClientSideTranslatorPB implements
 
     for (StorageBlockReport r : reports) {
       StorageBlockReportProto.Builder reportBuilder = StorageBlockReportProto
-          .newBuilder().setStorage(PBHelper.convert(r.getStorage()));
+          .newBuilder().setStorage(PBHelperClient.convert(r.getStorage()));
       BlockListAsLongs blocks = r.getBlocks();
       if (useBlocksBuffer) {
         reportBuilder.setNumberOfBlocks(blocks.getNumberOfBlocks());
@@ -240,7 +243,7 @@ public class DatanodeProtocolClientSideTranslatorPB implements
       StorageReceivedDeletedBlocksProto.Builder repBuilder = 
           StorageReceivedDeletedBlocksProto.newBuilder();
       repBuilder.setStorageUuid(storageBlock.getStorage().getStorageID());  // Set for wire compatibility.
-      repBuilder.setStorage(PBHelper.convert(storageBlock.getStorage()));
+      repBuilder.setStorage(PBHelperClient.convert(storageBlock.getStorage()));
       for (ReceivedDeletedBlockInfo rdBlock : storageBlock.getBlocks()) {
         repBuilder.addBlocks(PBHelper.convert(rdBlock));
       }
@@ -281,7 +284,7 @@ public class DatanodeProtocolClientSideTranslatorPB implements
     ReportBadBlocksRequestProto.Builder builder = ReportBadBlocksRequestProto
         .newBuilder();
     for (int i = 0; i < blocks.length; i++) {
-      builder.addBlocks(i, PBHelper.convert(blocks[i]));
+      builder.addBlocks(i, PBHelperClient.convertLocatedBlock(blocks[i]));
     }
     ReportBadBlocksRequestProto req = builder.build();
     try {
@@ -298,11 +301,11 @@ public class DatanodeProtocolClientSideTranslatorPB implements
       ) throws IOException {
     CommitBlockSynchronizationRequestProto.Builder builder = 
         CommitBlockSynchronizationRequestProto.newBuilder()
-        .setBlock(PBHelper.convert(block)).setNewGenStamp(newgenerationstamp)
+        .setBlock(PBHelperClient.convert(block)).setNewGenStamp(newgenerationstamp)
         .setNewLength(newlength).setCloseFile(closeFile)
         .setDeleteBlock(deleteblock);
     for (int i = 0; i < newtargets.length; i++) {
-      builder.addNewTaragets(PBHelper.convert(newtargets[i]));
+      builder.addNewTaragets(PBHelperClient.convert(newtargets[i]));
       builder.addNewTargetStorages(newtargetstorages[i]);
     }
     CommitBlockSynchronizationRequestProto req = builder.build();

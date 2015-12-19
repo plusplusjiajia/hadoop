@@ -29,11 +29,15 @@ import org.apache.avro.specific.SpecificDatumWriter;
 import org.apache.avro.util.Utf8;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.mapreduce.Counter;
 import org.apache.hadoop.mapreduce.CounterGroup;
 import org.apache.hadoop.mapreduce.Counters;
+
+import com.google.common.annotations.VisibleForTesting;
 
 /**
  * Event Writer is an utility class used to write events to the underlying
@@ -41,22 +45,47 @@ import org.apache.hadoop.mapreduce.Counters;
  * is created per job 
  * 
  */
-class EventWriter {
+@InterfaceAudience.Private
+@InterfaceStability.Unstable
+public class EventWriter {
   static final String VERSION = "Avro-Json";
+  static final String VERSION_BINARY = "Avro-Binary";
 
   private FSDataOutputStream out;
   private DatumWriter<Event> writer =
     new SpecificDatumWriter<Event>(Event.class);
   private Encoder encoder;
   private static final Log LOG = LogFactory.getLog(EventWriter.class);
-  
-  EventWriter(FSDataOutputStream out) throws IOException {
+
+  /**
+   * avro encoding format supported by EventWriter.
+   */
+  public enum WriteMode { JSON, BINARY }
+  private final WriteMode writeMode;
+  private final boolean jsonOutput;  // Cache value while we have 2 modes
+
+  @VisibleForTesting
+  public EventWriter(FSDataOutputStream out, WriteMode mode)
+      throws IOException {
     this.out = out;
-    out.writeBytes(VERSION);
+    this.writeMode = mode;
+    if (this.writeMode==WriteMode.JSON) {
+      this.jsonOutput = true;
+      out.writeBytes(VERSION);
+    } else if (this.writeMode==WriteMode.BINARY) {
+      this.jsonOutput = false;
+      out.writeBytes(VERSION_BINARY);
+    } else {
+      throw new IOException("Unknown mode: " + mode);
+    }
     out.writeBytes("\n");
     out.writeBytes(Event.SCHEMA$.toString());
     out.writeBytes("\n");
-    this.encoder =  EncoderFactory.get().jsonEncoder(Event.SCHEMA$, out);
+    if (!this.jsonOutput) {
+      this.encoder = EncoderFactory.get().binaryEncoder(out, null);
+    } else {
+      this.encoder = EncoderFactory.get().jsonEncoder(Event.SCHEMA$, out);
+    }
   }
   
   synchronized void write(HistoryEvent event) throws IOException { 
@@ -65,7 +94,9 @@ class EventWriter {
     wrapper.setEvent(event.getDatum());
     writer.write(wrapper, encoder);
     encoder.flush();
-    out.writeBytes("\n");
+    if (this.jsonOutput) {
+      out.writeBytes("\n");
+    }
   }
   
   void flush() throws IOException {
@@ -74,7 +105,8 @@ class EventWriter {
     out.hflush();
   }
 
-  void close() throws IOException {
+  @VisibleForTesting
+  public void close() throws IOException {
     try {
       encoder.flush();
       out.close();

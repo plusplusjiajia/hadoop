@@ -26,6 +26,10 @@ The YARN Timeline Server
 * [Publishing of application specific data](#Publishing_of_application_specific_data)
 * [Timeline Server REST API](#Timeline_Server_REST_API_v1)
 * [Generic Data REST APIs](#GENERIC_DATA_REST_APIS)
+* [Timelnine Server Performance Test Tool](#TIMELINE_SERVER_PERFORMANCE_TEST_TOOL)
+    * [Highlights](#HIGHLIGHTS)
+    * [Usage](#USAGE)
+    * [Sample Runs](#SAMPLE_RUNS)
 
 <a name="Overview"></a>Overview
 ---------
@@ -185,6 +189,14 @@ selected if this policy is either of `HTTPS_ONLY` or `HTTP_AND_HTTPS`.
 | `yarn.timeline-service.client.retry-interval-ms` | The interval in milliseconds between retries for the timeline service client. Defaults to `1000`. |
 | `yarn.timeline-service.generic-application-history.max-applications` | The max number of applications could be fetched by using REST API or application history protocol and shown in timeline server web ui. Defaults to `10000`. |
 
+#### UI Hosting Configuration
+
+The timeline service can host multiple UIs if enabled. The service can support both static web sites hosted in a directory or war files bundled. The web UI is then hosted on the timeline service HTTP port under the path configured.
+| Configuration Property | Description |
+|:---- |:---- |
+| `yarn.timeline-service.ui-names` | Comma separated list of UIs that will be hosted. Defaults to `none`. |
+| `yarn.timeline-service.ui-on-disk-path.$name` | For each of the ui-names, an on disk path should be specified to the directory service static content or the location of a web archive (war file). |
+| `yarn.timeline-service.ui-web-path.$name` | For each of the ui-names, the web path should be specified relative to the Timeline server root. Paths should begin with a starting slash. |
 
 
 #### Security Configuration
@@ -1087,7 +1099,12 @@ Response Body:
           "submittedTime":1430425001004,
           "startedTime":1430425001004,
           "finishedTime":1430425008861,
-          "elapsedTime":7857},
+          "elapsedTime":7857,
+          "unmanagedApplication":"false",
+          "applicationPriority":0,
+          "appNodeLabelExpression":"",
+          "amNodeLabelExpression":""
+          },
           {
           "appId":"application_1430424020775_0003",
           "currentAppAttemptId":"appattempt_1430424020775_0003_000001",
@@ -1106,7 +1123,12 @@ Response Body:
           "submittedTime":1430424956650,
           "startedTime":1430424956650,
           "finishedTime":1430424963907,
-          "elapsedTime":7257},
+          "elapsedTime":7257,
+          "unmanagedApplication":"false",
+          "applicationPriority":0,
+          "appNodeLabelExpression":"",
+          "amNodeLabelExpression":""
+          },
           {
           "appId":"application_1430424020775_0002",
           "currentAppAttemptId":"appattempt_1430424020775_0002_000001",
@@ -1125,7 +1147,12 @@ Response Body:
           "submittedTime":1430424769395,
           "startedTime":1430424769395,
           "finishedTime":1430424776594,
-          "elapsedTime":7199},
+          "elapsedTime":7199,
+          "unmanagedApplication":"false",
+          "applicationPriority":0,
+          "appNodeLabelExpression":"",
+          "amNodeLabelExpression":""
+          },
           {
           "appId":"application_1430424020775_0001",
           "currentAppAttemptId":"appattempt_1430424020775_0001_000001",
@@ -1145,7 +1172,11 @@ Response Body:
           "startedTime":1430424072153,
           "finishedTime":1430424776594,
           "elapsedTime":18344,
-          "applicationTags":"mrapplication,ta-example"
+          "applicationTags":"mrapplication,ta-example",
+          "unmanagedApplication":"false",
+          "applicationPriority":0,
+          "appNodeLabelExpression":"",
+          "amNodeLabelExpression":""
           }
       ]
     }
@@ -1187,6 +1218,10 @@ Response Body:
         <startedTime>1430425001004</startedTime>
         <finishedTime>1430425008861</finishedTime>
         <elapsedTime>7857</elapsedTime>
+        <unmanagedApplication>false</unmanagedApplication>
+        <applicationPriority>0</applicationPriority>
+        <appNodeLabelExpression></appNodeLabelExpression>
+        <amNodeLabelExpression></amNodeLabelExpression>
       </app>
       <app>
         <appId>application_1430424020775_0003</appId>
@@ -1207,6 +1242,10 @@ Response Body:
         <startedTime>1430424956650</startedTime>
         <finishedTime>1430424963907</finishedTime>
         <elapsedTime>7257</elapsedTime>
+        <unmanagedApplication>false</unmanagedApplication>
+        <applicationPriority>0</applicationPriority>
+        <appNodeLabelExpression></appNodeLabelExpression>
+        <amNodeLabelExpression></amNodeLabelExpression>
       </app>
       <app>
         <appId>application_1430424020775_0002</appId>
@@ -1227,6 +1266,10 @@ Response Body:
         <startedTime>1430424769395</startedTime>
         <finishedTime>1430424776594</finishedTime>
         <elapsedTime>7199</elapsedTime>
+        <unmanagedApplication>false</unmanagedApplication>
+        <applicationPriority>0</applicationPriority>
+        <appNodeLabelExpression></appNodeLabelExpression>
+        <amNodeLabelExpression></amNodeLabelExpression>
       </app>
       <app>
         <appId>application_1430424020775_0001</appId>
@@ -1248,6 +1291,10 @@ Response Body:
         <finishedTime>1430424072153</finishedTime>
         <elapsedTime>18344</elapsedTime>
         <applicationTags>mrapplication,ta-example</applicationTags>
+        <unmanagedApplication>false</unmanagedApplication>
+        <applicationPriority>0</applicationPriority>
+        <appNodeLabelExpression></appNodeLabelExpression>
+        <amNodeLabelExpression></amNodeLabelExpression>
       </app>
     </apps>
 
@@ -1298,7 +1345,10 @@ None
 | `host` | string | The host of the ApplicationMaster |
 | `rpcPort` | int | The RPC port of the ApplicationMaster; zero if no IPC service declared |
 | `applicationTags` | string | The application tags. |
-
+| `unmanagedApplication` | boolean | Is the application unmanaged. |
+| `applicationPriority` | int | Priority of the submitted application. |
+| `appNodeLabelExpression` | string |Node Label expression which is used to identify the nodes on which application's containers are expected to run by default.|
+| `amNodeLabelExpression` | string | Node Label expression which is used to identify the node on which application's  AM container is expected to run.|
 ### Response Examples:
 
 #### JSON response
@@ -1334,7 +1384,11 @@ Response Body:
       "startedTime": 1430424053809,
       "finishedTime": 1430424072153,
       "elapsedTime": 18344,
-      "applicationTags": mrapplication,tag-example
+      "applicationTags": mrapplication,tag-example,
+      "unmanagedApplication": "false",
+      "applicationPriority": 0,
+      "appNodeLabelExpression": "",
+      "amNodeLabelExpression": ""
     }
 
 #### XML response
@@ -1373,6 +1427,10 @@ Response Body:
        <finishedTime>1430424072153</finishedTime>
        <elapsedTime>18344</elapsedTime>
        <applicationTags>mrapplication,ta-example</applicationTags>
+       <unmanagedApplication>false</unmanagedApplication>
+       <applicationPriority>0</applicationPriority>
+       <appNodeLabelExpression><appNodeLabelExpression>
+       <amNodeLabelExpression><amNodeLabelExpression>
      </app>
 
 ## <a name="REST_API_APPLICATION_ATTEMPT_LIST"></a>Application Attempt List
@@ -1979,3 +2037,77 @@ This hides details of other domains from an unauthorized caller.
 this failure *will not* result in an HTTP error code being retured.
 A status code of 200 will be returned —however, there will be an error code
 in the list of failed entities for each entity which could not be added.
+
+<a name="TIMELINE_SERVER_PERFORMANCE_TEST_TOOL"></a> Timelnine Server Performance Test Tool
+----------
+###<a name="HIGHLIGHTS"></a>Highlights
+
+The timeline server performance test tool helps measure timeline server's write performance. The test
+launches SimpleEntityWriter mappers or JobHistoryFileReplay mappers to write timeline
+entities to the timeline server. At the end, the transaction rate(ops/s) per mapper and the total transaction rate
+will be measured and printed out. Running the test with SimpleEntityWriter mappers
+will also measure and show the IO rate(KB/s) per mapper and the total IO rate.
+
+###<a name="USAGE"></a>Usage
+
+Mapper Types Description:
+
+     1. SimpleEntityWriter mapper
+        Each mapper writes a user-specified number of timeline entities
+        with a user-specified size to the timeline server.
+
+     2. JobHistoryFileReplay mapper
+        Each mapper replays jobhistory files under a specified directory
+        (both the jhist file and its corresponding conf.xml are required to
+         be present in order to be replayed. The number of mappers should be no more
+         than the number of jobhistory files).
+        Each mapper will get assigned some jobhistory files to replay. For each
+        job history file, a mapper will parse it to get jobinfo and then create
+        timeline entities. Each mapper also has the choice to write all the
+        timeline entities created at once or one at a time.
+
+Options:
+
+    [-m <maps>] number of mappers (default: 1)
+    [-v] timeline service version
+    [-mtype <mapper type in integer>]
+          1. simple entity write mapper
+          2. jobhistory files replay mapper
+    [-s <(KBs)test>] number of KB per put (mtype=1, default: 1 KB)
+    [-t] package sending iterations per mapper (mtype=1, default: 100)
+    [-d <path>] root path of job history files (mtype=2)
+    [-r <replay mode>] (mtype=2)
+          1. write all entities for a job in one put (default)
+          2. write one entity at a time
+
+###<a name="SAMPLE_RUNS"></a>Sample Runs
+
+Run SimpleEntityWriter test:
+
+    bin/hadoop jar performanceTest.jar timelineperformance -m 4 -mtype 1 -s 3 -t 200
+
+Example output of SimpleEntityWriter test :
+
+    TRANSACTION RATE (per mapper): 20000.0 ops/s
+    IO RATE (per mapper): 60000.0 KB/s
+    TRANSACTION RATE (total): 80000.0 ops/s
+    IO RATE (total): 240000.0 KB/s
+
+Run JobHistoryFileReplay mapper test
+
+    $ bin/hadoop jar performanceTest.jar timelineperformance -m 2 -mtype 2 -d /testInput -r 2
+
+Example input of JobHistoryFileReplay mapper test:
+
+    $ bin/hadoop fs -ls /testInput
+    /testInput/job_1.jhist
+    /testInput/job_1_conf.xml
+    /testInput/job_2.jhist
+    /testInput/job_2_conf.xml
+
+Eample output of JobHistoryFileReplay test:
+
+    TRANSACTION RATE (per mapper): 4000.0 ops/s
+    IO RATE (per mapper): 0.0 KB/s
+    TRANSACTION RATE (total): 8000.0 ops/s
+    IO RATE (total): 0.0 KB/s

@@ -57,17 +57,26 @@ public class NodeManagerMetrics {
   @Metric("Disk utilization % on good log dirs")
       MutableGaugeInt goodLogDirsDiskUtilizationPerc;
 
+  private JvmMetrics jvmMetrics = null;
 
   private long allocatedMB;
   private long availableMB;
+
+  public NodeManagerMetrics(JvmMetrics jvmMetrics) {
+    this.jvmMetrics = jvmMetrics;
+  }
 
   public static NodeManagerMetrics create() {
     return create(DefaultMetricsSystem.instance());
   }
 
   static NodeManagerMetrics create(MetricsSystem ms) {
-    JvmMetrics.create("NodeManager", null, ms);
-    return ms.register(new NodeManagerMetrics());
+    JvmMetrics jm = JvmMetrics.create("NodeManager", null, ms);
+    return ms.register(new NodeManagerMetrics(jm));
+  }
+
+  public JvmMetrics getJvmMetrics() {
+    return jvmMetrics;
   }
 
   // Potential instrumentation interface methods
@@ -122,6 +131,17 @@ public class NodeManagerMetrics {
     availableGB.set((int)Math.floor(availableMB/1024d));
     allocatedVCores.decr(res.getVirtualCores());
     availableVCores.incr(res.getVirtualCores());
+  }
+
+  public void changeContainer(Resource before, Resource now) {
+    int deltaMB = now.getMemory() - before.getMemory();
+    int deltaVCores = now.getVirtualCores() - before.getVirtualCores();
+    allocatedMB = allocatedMB + deltaMB;
+    allocatedGB.set((int)Math.ceil(allocatedMB/1024d));
+    availableMB = availableMB - deltaMB;
+    availableGB.set((int)Math.floor(availableMB/1024d));
+    allocatedVCores.incr(deltaVCores);
+    availableVCores.decr(deltaVCores);
   }
 
   public void addResource(Resource res) {

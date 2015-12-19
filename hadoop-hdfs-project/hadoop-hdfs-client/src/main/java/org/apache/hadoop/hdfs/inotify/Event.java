@@ -34,8 +34,8 @@ import java.util.List;
 @InterfaceAudience.Public
 @InterfaceStability.Unstable
 public abstract class Event {
-  public static enum EventType {
-    CREATE, CLOSE, APPEND, RENAME, METADATA, UNLINK
+  public enum EventType {
+    CREATE, CLOSE, APPEND, RENAME, METADATA, UNLINK, TRUNCATE
   }
 
   private EventType eventType;
@@ -51,6 +51,7 @@ public abstract class Event {
   /**
    * Sent when a file is closed after append or create.
    */
+  @InterfaceAudience.Public
   public static class CloseEvent extends Event {
     private String path;
     private long fileSize;
@@ -81,15 +82,24 @@ public abstract class Event {
     public long getTimestamp() {
       return timestamp;
     }
+
+    @Override
+    @InterfaceStability.Unstable
+    public String toString() {
+      return "CloseEvent [path=" + path + ", fileSize=" + fileSize
+          + ", timestamp=" + timestamp + "]";
+    }
+
   }
 
   /**
    * Sent when a new file is created (including overwrite).
    */
+  @InterfaceAudience.Public
   public static class CreateEvent extends Event {
 
-    public static enum INodeType {
-      FILE, DIRECTORY, SYMLINK;
+    public enum INodeType {
+      FILE, DIRECTORY, SYMLINK
     }
 
     private INodeType iNodeType;
@@ -232,6 +242,29 @@ public abstract class Event {
     public long getDefaultBlockSize() {
       return defaultBlockSize;
     }
+
+    @Override
+    @InterfaceStability.Unstable
+    public String toString() {
+      StringBuilder content = new StringBuilder();
+      content.append("CreateEvent [INodeType=").append(iNodeType)
+          .append(", path=").append(path)
+          .append(", ctime=").append(ctime)
+          .append(", replication=").append(replication)
+          .append(", ownerName=").append(ownerName)
+          .append(", groupName=").append(groupName)
+          .append(", perms=").append(perms).append(", ");
+
+      if (symlinkTarget != null) {
+        content.append("symlinkTarget=").append(symlinkTarget).append(", ");
+      }
+
+      content.append("overwrite=").append(overwrite)
+          .append(", defaultBlockSize=").append(defaultBlockSize)
+          .append("]");
+      return content.toString();
+    }
+
   }
 
   /**
@@ -242,10 +275,11 @@ public abstract class Event {
    * metadataType of the MetadataUpdateEvent will be null or will have their default
    * values.
    */
+  @InterfaceAudience.Public
   public static class MetadataUpdateEvent extends Event {
 
-    public static enum MetadataType {
-      TIMES, REPLICATION, OWNER, PERMS, ACLS, XATTRS;
+    public enum MetadataType {
+      TIMES, REPLICATION, OWNER, PERMS, ACLS, XATTRS
     }
 
     private String path;
@@ -400,11 +434,46 @@ public abstract class Event {
       return xAttrsRemoved;
     }
 
+    @Override
+    @InterfaceStability.Unstable
+    public String toString() {
+      StringBuilder content = new StringBuilder();
+      content.append("MetadataUpdateEvent [path=").append(path)
+          .append(", metadataType=").append(metadataType);
+      switch (metadataType) {
+      case TIMES:
+        content.append(", mtime=").append(mtime)
+            .append(", atime=").append(atime);
+        break;
+      case REPLICATION:
+        content.append(", replication=").append(replication);
+        break;
+      case OWNER:
+        content.append(", ownerName=").append(ownerName)
+            .append(", groupName=").append(groupName);
+        break;
+      case PERMS:
+        content.append(", perms=").append(perms);
+        break;
+      case ACLS:
+        content.append(", acls=").append(acls);
+        break;
+      case XATTRS:
+        content.append(", xAttrs=").append(xAttrs)
+            .append(", xAttrsRemoved=").append(xAttrsRemoved);
+        break;
+      default:
+        break;
+      }
+      content.append(']');
+      return content.toString();
+    }
   }
 
   /**
    * Sent when a file, directory, or symlink is renamed.
    */
+  @InterfaceAudience.Public
   public static class RenameEvent extends Event {
     private String srcPath;
     private String dstPath;
@@ -456,11 +525,20 @@ public abstract class Event {
     public long getTimestamp() {
       return timestamp;
     }
+
+    @Override
+    @InterfaceStability.Unstable
+    public String toString() {
+      return "RenameEvent [srcPath=" + srcPath + ", dstPath=" + dstPath
+          + ", timestamp=" + timestamp + "]";
+    }
+
   }
 
   /**
    * Sent when an existing file is opened for append.
    */
+  @InterfaceAudience.Public
   public static class AppendEvent extends Event {
     private String path;
     private boolean newBlock;
@@ -497,11 +575,19 @@ public abstract class Event {
     public boolean toNewBlock() {
       return newBlock;
     }
+
+    @Override
+    @InterfaceStability.Unstable
+    public String toString() {
+      return "AppendEvent [path=" + path + ", newBlock=" + newBlock + "]";
+    }
+
   }
 
   /**
    * Sent when a file, directory, or symlink is deleted.
    */
+  @InterfaceAudience.Public
   public static class UnlinkEvent extends Event {
     private String path;
     private long timestamp;
@@ -540,6 +626,55 @@ public abstract class Event {
      */
     public long getTimestamp() {
       return timestamp;
+    }
+
+    @Override
+    @InterfaceStability.Unstable
+    public String toString() {
+      return "UnlinkEvent [path=" + path + ", timestamp=" + timestamp + "]";
+    }
+  }
+
+  /**
+   * Sent when a file is truncated.
+   */
+  @InterfaceAudience.Public
+  public static class TruncateEvent extends Event {
+    private String path;
+    private long fileSize;
+    private long timestamp;
+
+
+    public TruncateEvent(String path, long fileSize, long timestamp) {
+      super(EventType.TRUNCATE);
+      this.path = path;
+      this.fileSize = fileSize;
+      this.timestamp = timestamp;
+    }
+
+    public String getPath() {
+      return path;
+    }
+
+    /**
+     * The size of the truncated file in bytes.
+     */
+    public long getFileSize() {
+      return fileSize;
+    }
+
+    /**
+     * The time when this event occurred, in milliseconds since the epoch.
+     */
+    public long getTimestamp() {
+      return timestamp;
+    }
+
+    @Override
+    @InterfaceStability.Unstable
+    public String toString() {
+      return "TruncateEvent [path=" + path + ", fileSize=" + fileSize
+          + ", timestamp=" + timestamp + "]";
     }
   }
 }

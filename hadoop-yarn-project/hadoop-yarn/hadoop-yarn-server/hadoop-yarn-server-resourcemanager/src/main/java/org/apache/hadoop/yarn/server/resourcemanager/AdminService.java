@@ -66,10 +66,14 @@ import org.apache.hadoop.yarn.server.api.protocolrecords.CheckForDecommissioning
 import org.apache.hadoop.yarn.server.api.protocolrecords.CheckForDecommissioningNodesResponse;
 import org.apache.hadoop.yarn.server.api.protocolrecords.RefreshAdminAclsRequest;
 import org.apache.hadoop.yarn.server.api.protocolrecords.RefreshAdminAclsResponse;
+import org.apache.hadoop.yarn.server.api.protocolrecords.RefreshClusterMaxPriorityRequest;
+import org.apache.hadoop.yarn.server.api.protocolrecords.RefreshClusterMaxPriorityResponse;
 import org.apache.hadoop.yarn.server.api.protocolrecords.RefreshNodesRequest;
 import org.apache.hadoop.yarn.server.api.protocolrecords.RefreshNodesResponse;
 import org.apache.hadoop.yarn.server.api.protocolrecords.RefreshQueuesRequest;
 import org.apache.hadoop.yarn.server.api.protocolrecords.RefreshQueuesResponse;
+import org.apache.hadoop.yarn.server.api.protocolrecords.RefreshNodesResourcesRequest;
+import org.apache.hadoop.yarn.server.api.protocolrecords.RefreshNodesResourcesResponse;
 import org.apache.hadoop.yarn.server.api.protocolrecords.RefreshServiceAclsRequest;
 import org.apache.hadoop.yarn.server.api.protocolrecords.RefreshServiceAclsResponse;
 import org.apache.hadoop.yarn.server.api.protocolrecords.RefreshSuperUserGroupsConfigurationRequest;
@@ -82,7 +86,9 @@ import org.apache.hadoop.yarn.server.api.protocolrecords.ReplaceLabelsOnNodeRequ
 import org.apache.hadoop.yarn.server.api.protocolrecords.ReplaceLabelsOnNodeResponse;
 import org.apache.hadoop.yarn.server.api.protocolrecords.UpdateNodeResourceRequest;
 import org.apache.hadoop.yarn.server.api.protocolrecords.UpdateNodeResourceResponse;
+import org.apache.hadoop.yarn.server.resourcemanager.nodelabels.NodeLabelsUtils;
 import org.apache.hadoop.yarn.server.resourcemanager.reservation.ReservationSystem;
+import org.apache.hadoop.yarn.server.resourcemanager.resource.DynamicResourceConfiguration;
 import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNode;
 import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNodeResourceUpdateEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.security.authorize.RMPolicyProvider;
@@ -115,7 +121,7 @@ public class AdminService extends CompositeService implements
   private UserGroupInformation daemonUser;
 
   @VisibleForTesting
-  boolean isDistributedNodeLabelConfiguration = false;
+  boolean isCentralizedNodeLabelConfiguration = true;
 
   public AdminService(ResourceManager rm, RMContext rmContext) {
     super(AdminService.class.getName());
@@ -146,8 +152,8 @@ public class AdminService extends CompositeService implements
         .getCurrentUser());
     rmId = conf.get(YarnConfiguration.RM_HA_ID);
 
-    isDistributedNodeLabelConfiguration =
-        YarnConfiguration.isDistributedNodeLabelConfiguration(conf);
+    isCentralizedNodeLabelConfiguration =
+        YarnConfiguration.isCentralizedNodeLabelConfiguration(conf);
 
     super.serviceInit(conf);
   }
@@ -295,6 +301,7 @@ public class AdminService extends CompositeService implements
     }
   }
 
+  @SuppressWarnings("unchecked")
   @Override
   public synchronized void transitionToActive(
       HAServiceProtocol.StateChangeRequestInfo reqInfo) throws IOException {
@@ -310,10 +317,6 @@ public class AdminService extends CompositeService implements
     checkHaStateChange(reqInfo);
     try {
       rm.transitionToActive();
-      // call all refresh*s for active RM to get the updated configurations.
-      refreshAll();
-      RMAuditLogger.logSuccess(user.getShortUserName(),
-          "transitionToActive", "RMHAProtocolService");
     } catch (Exception e) {
       RMAuditLogger.logFailure(user.getShortUserName(), "transitionToActive",
           "", "RMHAProtocolService",
@@ -321,6 +324,21 @@ public class AdminService extends CompositeService implements
       throw new ServiceFailedException(
           "Error when transitioning to Active mode", e);
     }
+    try {
+      // call all refresh*s for active RM to get the updated configurations.
+      refreshAll();
+    } catch (Exception e) {
+      LOG.error("RefreshAll failed so firing fatal event", e);
+      rmContext
+          .getDispatcher()
+          .getEventHandler()
+          .handle(
+          new RMFatalEvent(RMFatalEventType.TRANSITION_TO_ACTIVE_FAILED, e));
+      throw new ServiceFailedException(
+          "Error on refreshAll during transistion to Active", e);
+    }
+    RMAuditLogger.logSuccess(user.getShortUserName(), "transitionToActive",
+        "RMHAProtocolService");
   }
 
   @Override
@@ -588,6 +606,55 @@ public class AdminService extends CompositeService implements
     return response;
   }
 
+  @Override
+  public RefreshNodesResourcesResponse refreshNodesResources(
+      RefreshNodesResourcesRequest request)
+      throws YarnException, StandbyException {
+    String argName = "refreshNodesResources";
+    UserGroupInformation user = checkAcls(argName);
+    final String msg = "refresh nodes.";
+
+    checkRMStatus(user.getShortUserName(), argName, msg);
+
+    RefreshNodesResourcesResponse response =
+        recordFactory.newRecordInstance(RefreshNodesResourcesResponse.class);
+
+    try {
+      Configuration conf = getConfig();
+      Configuration configuration = new Configuration(conf);
+      DynamicResourceConfiguration newconf;
+
+      InputStream DRInputStream =
+        this.rmContext.getConfigurationProvider()
+        .getConfigurationInputStream(configuration,
+          YarnConfiguration.DR_CONFIGURATION_FILE);
+      if (DRInputStream != null) {
+        configuration.addResource(DRInputStream);
+        newconf = new DynamicResourceConfiguration(configuration, false);
+      } else {
+        newconf = new DynamicResourceConfiguration(configuration, true);
+      }
+
+      if (newconf.getNodes().length == 0) {
+        RMAuditLogger.logSuccess(user.getShortUserName(), argName,
+            "AdminService");
+        return response;
+      } else {
+        Map<NodeId, ResourceOption> nodeResourceMap =
+          newconf.getNodeResourceMap();
+
+        UpdateNodeResourceRequest updateRequest =
+          UpdateNodeResourceRequest.newInstance(nodeResourceMap);
+        updateNodeResource(updateRequest);
+        RMAuditLogger.logSuccess(user.getShortUserName(), argName,
+          "AdminService");
+        return response;
+      }
+    } catch (IOException ioe) {
+      throw logAndWrapException(ioe, user.getShortUserName(), argName, msg);
+    }
+  }
+
   private synchronized Configuration getConfiguration(Configuration conf,
       String... confFileNames) throws YarnException, IOException {
     for (String confFileName : confFileNames) {
@@ -613,6 +680,7 @@ public class AdminService extends CompositeService implements
           false)) {
         refreshServiceAcls(RefreshServiceAclsRequest.newInstance());
       }
+      refreshClusterMaxPriority(RefreshClusterMaxPriorityRequest.newInstance());
     } catch (Exception ex) {
       throw new ServiceFailedException(ex.getMessage());
     }
@@ -678,7 +746,13 @@ public class AdminService extends CompositeService implements
     String operation = "replaceLabelsOnNode";
     final String msg = "set node to labels.";
 
-    checkAndThrowIfDistributedNodeLabelConfEnabled(operation);
+    try {
+      NodeLabelsUtils.verifyCentralizedNodeLabelConfEnabled(operation,
+          isCentralizedNodeLabelConfiguration);
+    } catch (IOException ioe) {
+      throw RPCUtil.getRemoteException(ioe);
+    }
+
     UserGroupInformation user = checkAcls(operation);
 
     checkRMStatus(user.getShortUserName(), operation, msg);
@@ -713,17 +787,6 @@ public class AdminService extends CompositeService implements
     return RPCUtil.getRemoteException(exception);
   }
 
-  private void checkAndThrowIfDistributedNodeLabelConfEnabled(String operation)
-      throws YarnException {
-    if (isDistributedNodeLabelConfiguration) {
-      String msg =
-          String.format("Error when invoke method=%s because of "
-              + "distributed node label configuration enabled.", operation);
-      LOG.error(msg);
-      throw RPCUtil.getRemoteException(new IOException(msg));
-    }
-  }
-
   @Override
   public CheckForDecommissioningNodesResponse checkForDecommissioningNodes(
       CheckForDecommissioningNodesRequest checkForDecommissioningNodesRequest)
@@ -741,5 +804,39 @@ public class AdminService extends CompositeService implements
         .newRecordInstance(CheckForDecommissioningNodesResponse.class);
     response.setDecommissioningNodes(decommissioningNodes);
     return response;
+  }
+
+  @Override
+  public RefreshClusterMaxPriorityResponse refreshClusterMaxPriority(
+      RefreshClusterMaxPriorityRequest request) throws YarnException,
+      IOException {
+    String argName = "refreshClusterMaxPriority";
+    String msg = "refresh cluster max priority";
+    UserGroupInformation user = checkAcls(argName);
+
+    checkRMStatus(user.getShortUserName(), argName, msg);
+    try {
+      Configuration conf =
+          getConfiguration(new Configuration(false),
+              YarnConfiguration.YARN_SITE_CONFIGURATION_FILE);
+
+      rmContext.getScheduler().setClusterMaxPriority(conf);
+
+      RMAuditLogger
+          .logSuccess(user.getShortUserName(), argName, "AdminService");
+      return recordFactory
+          .newRecordInstance(RefreshClusterMaxPriorityResponse.class);
+    } catch (YarnException e) {
+      throw logAndWrapException(e, user.getShortUserName(), argName, msg);
+    }
+  }
+
+  public String getHAZookeeperConnectionState() {
+    if (!rmContext.isHAEnabled()) {
+      return "ResourceManager HA is not enabled.";
+    } else if (!autoFailoverEnabled) {
+      return "Auto Failover is not enabled.";
+    }
+    return this.embeddedElector.getHAZookeeperConnectionState();
   }
 }

@@ -81,9 +81,10 @@ public interface NameNodeMXBean {
   public boolean isUpgradeFinalized();
 
   /**
-   * Gets the RollingUpgrade information
+   * Gets the RollingUpgrade information.
    *
-   * @return Rolling upgrade information
+   * @return Rolling upgrade information if an upgrade is in progress. Else
+   * (e.g. if there is no upgrade or the upgrade is finalized), returns null.
    */
   public RollingUpgradeInfo.Bean getRollingUpgradeStatus();
 
@@ -138,13 +139,6 @@ public interface NameNodeMXBean {
   public long getTotalBlocks();
   
   /**
-   * Gets the total number of files on the cluster
-   * 
-   * @return the total number of files on the cluster
-   */
-  public long getTotalFiles();
-  
-  /**
    * Gets the total number of missing blocks on the cluster
    * 
    * @return the total number of missing blocks on the cluster
@@ -159,6 +153,13 @@ public interface NameNodeMXBean {
    * replication factor 1
    */
   public long getNumberOfMissingBlocksWithReplicationFactorOne();
+
+  /**
+   * Gets the total number of snapshottable dirs in the system.
+   *
+   * @return the total number of snapshottable dirs in the system
+   */
+  public long getNumberOfSnapshottableDirs();
 
   /**
    * Gets the number of threads.
@@ -231,11 +232,10 @@ public interface NameNodeMXBean {
   public String getJournalTransactionInfo();
 
   /**
-   * Gets the NN start time
-   *
-   * @return the NN start time
+   * Gets the NN start time in milliseconds.
+   * @return the NN start time in msec
    */
-  public String getNNStarted();
+  long getNNStartedTimeInMillis();
 
   /**
    * Get the compilation information which contains date, user and branch
@@ -265,4 +265,9 @@ public interface NameNodeMXBean {
    */
   public Map<String, Integer> getDistinctVersions();
   
+  /**
+   * Get namenode directory size.
+   */
+  String getNameDirSize();
+
 }

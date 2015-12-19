@@ -599,6 +599,8 @@ function hadoop_usage
   echo "--run-tests            Run all relevant tests below the base directory"
   echo "--skip-system-plugins  Do not load plugins from ${BINDIR}/test-patch.d"
   echo "--testlist=<list>      Specify which subsystem tests to use (comma delimited)"
+  echo "--test-parallel=<bool> Run multiple tests in parallel (default false in developer mode, true in Jenkins mode)"
+  echo "--test-threads=<int>   Number of tests to run in parallel (default defined in ${PROJECT_NAME} build)"
 
   echo "Shell binary overrides:"
   echo "--awk-cmd=<cmd>        The 'awk' command to use (default 'awk')"
@@ -691,6 +693,7 @@ function parse_args
       ;;
       --jenkins)
         JENKINS=true
+        TEST_PARALLEL=${TEST_PARALLEL:-true}
       ;;
       --jira-cmd=*)
         JIRACLI=${i#*=}
@@ -748,6 +751,12 @@ function parse_args
           hadoop_debug "Manually adding patch test subsystem ${j}"
           add_test "${j}"
         done
+      ;;
+      --test-parallel=*)
+        TEST_PARALLEL=${i#*=}
+      ;;
+      --test-threads=*)
+        TEST_THREADS=${i#*=}
       ;;
       --wget-cmd=*)
         WGET=${i#*=}
@@ -811,6 +820,13 @@ function parse_args
   PATCH_DIR=$(cd -P -- "${PATCH_DIR}" >/dev/null && pwd -P)
 
   GITDIFFLINES=${PATCH_DIR}/gitdifflines.txt
+
+  if [[ ${TEST_PARALLEL} == "true" ]] ; then
+    PARALLEL_TESTS_PROFILE=-Pparallel-tests
+    if [[ -n ${TEST_THREADS:-} ]]; then
+      TESTS_THREAD_COUNT="-DtestsThreadCount=$TEST_THREADS"
+    fi
+  fi
 }
 
 ## @description  Locate the pom.xml file for a given directory
@@ -947,6 +963,12 @@ function git_checkout
     # we need to explicitly fetch in case the
     # git ref hasn't been brought in tree yet
     if [[ ${OFFLINE} == false ]]; then
+
+      if [[ -f .git/rebase-apply ]]; then
+        hadoop_error "ERROR: previous rebase failed. Aborting it."
+        ${GIT} rebase --abort
+      fi
+
       ${GIT} pull --rebase
       if [[ $? != 0 ]]; then
         hadoop_error "ERROR: git pull is failing"
@@ -1521,8 +1543,8 @@ function check_reexec
 
   cd "${CWD}"
   mkdir -p "${PATCH_DIR}/dev-support-test"
-  cp -pr "${BASEDIR}"/dev-support/test-patch* "${PATCH_DIR}/dev-support-test"
-  cp -pr "${BASEDIR}"/dev-support/smart-apply* "${PATCH_DIR}/dev-support-test"
+  (cd "${BINDIR}"; tar cpf - . ) \
+	| (cd  "${PATCH_DIR}/dev-support-test"; tar xpf - )
 
   big_console_header "exec'ing test-patch.sh now..."
 
@@ -2239,13 +2261,14 @@ function check_unittests
 
     test_logfile=${PATCH_DIR}/testrun_${module_suffix}.txt
     echo "  Running tests in ${module_suffix}"
-    echo_and_redirect "${test_logfile}" "${MVN}" "${MAVEN_ARGS[@]}" clean install -fae ${NATIVE_PROFILE} ${REQUIRE_TEST_LIB_HADOOP} -D${PROJECT_NAME}PatchProcess
+    # shellcheck disable=2086
+    echo_and_redirect "${test_logfile}" "${MVN}" "${MAVEN_ARGS[@]}" clean install -fae ${NATIVE_PROFILE} ${REQUIRE_TEST_LIB_HADOOP} ${PARALLEL_TESTS_PROFILE} ${TESTS_THREAD_COUNT} -D${PROJECT_NAME}PatchProcess
     test_build_result=$?
 
     add_jira_footer "${module_suffix} test log" "@@BASE@@/testrun_${module_suffix}.txt"
 
     # shellcheck disable=2016
-    module_test_timeouts=$(${AWK} '/^Running / { if (last) { print last } last=$2 } /^Tests run: / { last="" }' "${test_logfile}")
+    module_test_timeouts=$(${AWK} '/^Running / { array[$NF] = 1 } /^Tests run: .* in / { delete array[$NF] } END { for (x in array) { print x } }' "${test_logfile}")
     if [[ -n "${module_test_timeouts}" ]] ; then
       test_timeouts="${test_timeouts} ${module_test_timeouts}"
       result=1

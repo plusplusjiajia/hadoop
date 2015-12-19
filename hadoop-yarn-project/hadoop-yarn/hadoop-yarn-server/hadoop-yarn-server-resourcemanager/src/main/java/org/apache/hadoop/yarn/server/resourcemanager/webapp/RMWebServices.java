@@ -85,6 +85,7 @@ import org.apache.hadoop.yarn.api.protocolrecords.RenewDelegationTokenRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.RenewDelegationTokenResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.SubmitApplicationRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.SubmitApplicationResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.UpdateApplicationPriorityRequest;
 import org.apache.hadoop.yarn.api.records.ApplicationAccessType;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.ApplicationReport;
@@ -97,6 +98,11 @@ import org.apache.hadoop.yarn.api.records.NodeLabel;
 import org.apache.hadoop.yarn.api.records.NodeState;
 import org.apache.hadoop.yarn.api.records.Priority;
 import org.apache.hadoop.yarn.api.records.QueueACL;
+import org.apache.hadoop.yarn.api.records.ReservationDefinition;
+import org.apache.hadoop.yarn.api.records.ReservationId;
+import org.apache.hadoop.yarn.api.records.ReservationRequest;
+import org.apache.hadoop.yarn.api.records.ReservationRequestInterpreter;
+import org.apache.hadoop.yarn.api.records.ReservationRequests;
 import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.api.records.YarnApplicationState;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
@@ -104,13 +110,12 @@ import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
 import org.apache.hadoop.yarn.factories.RecordFactory;
 import org.apache.hadoop.yarn.factory.providers.RecordFactoryProvider;
-import org.apache.hadoop.yarn.nodelabels.RMNodeLabel;
 import org.apache.hadoop.yarn.security.client.RMDelegationTokenIdentifier;
 import org.apache.hadoop.yarn.server.resourcemanager.RMAuditLogger;
 import org.apache.hadoop.yarn.server.resourcemanager.RMAuditLogger.AuditConstants;
 import org.apache.hadoop.yarn.server.resourcemanager.RMServerUtils;
 import org.apache.hadoop.yarn.server.resourcemanager.ResourceManager;
-import org.apache.hadoop.yarn.server.resourcemanager.nodelabels.RMNodeLabelsManager;
+import org.apache.hadoop.yarn.server.resourcemanager.nodelabels.NodeLabelsUtils;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttempt;
 import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNode;
@@ -122,6 +127,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fifo.FifoSchedule
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.AppAttemptInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.AppAttemptsInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.AppInfo;
+import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.AppPriority;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.AppQueue;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.AppState;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ApplicationStatisticsInfo;
@@ -141,9 +147,22 @@ import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.NodeInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.NodeLabelInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.NodeLabelsInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.NodeToLabelsEntry;
-import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.NodeToLabelsInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.NodeToLabelsEntryList;
+import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.NodeToLabelsInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.NodesInfo;
+import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ReservationDefinitionInfo;
+import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ReservationDeleteRequestInfo;
+import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ReservationDeleteResponseInfo;
+import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ReservationRequestInfo;
+import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ReservationRequestsInfo;
+import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ReservationSubmissionResponseInfo;
+import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ReservationSubmissionRequestInfo;
+import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ReservationUpdateRequestInfo;
+import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ReservationUpdateResponseInfo;
+import org.apache.hadoop.yarn.api.protocolrecords.ReservationDeleteRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.ReservationSubmissionRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.ReservationSubmissionResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.ReservationUpdateRequest;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ResourceInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.SchedulerInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.SchedulerTypeInfo;
@@ -175,7 +194,7 @@ public class RMWebServices {
   private @Context HttpServletResponse response;
 
   @VisibleForTesting
-  boolean isDistributedNodeLabelConfiguration = false;
+  boolean isCentralizedNodeLabelConfiguration = true;
 
   public final static String DELEGATION_TOKEN_HEADER =
       "Hadoop-YARN-RM-Delegation-Token";
@@ -184,19 +203,8 @@ public class RMWebServices {
   public RMWebServices(final ResourceManager rm, Configuration conf) {
     this.rm = rm;
     this.conf = conf;
-    isDistributedNodeLabelConfiguration =
-        YarnConfiguration.isDistributedNodeLabelConfiguration(conf);
-  }
-
-  private void checkAndThrowIfDistributedNodeLabelConfEnabled(String operation)
-      throws IOException {
-    if (isDistributedNodeLabelConfiguration) {
-      String msg =
-          String.format("Error when invoke method=%s because of "
-              + "distributed node label configuration enabled.", operation);
-      LOG.error(msg);
-      throw new IOException(msg);
-    }
+    isCentralizedNodeLabelConfiguration =
+        YarnConfiguration.isCentralizedNodeLabelConfiguration(conf);
   }
 
   RMWebServices(ResourceManager rm, Configuration conf,
@@ -257,8 +265,7 @@ public class RMWebServices {
       CapacityScheduler cs = (CapacityScheduler) rs;
       CSQueue root = cs.getRootQueue();
       sinfo =
-          new CapacitySchedulerInfo(root, cs, new RMNodeLabel(
-              RMNodeLabelsManager.NO_LABEL));
+          new CapacitySchedulerInfo(root, cs);
     } else if (rs instanceof FairScheduler) {
       FairScheduler fs = (FairScheduler) rs;
       sinfo = new FairSchedulerInfo(fs);
@@ -694,7 +701,8 @@ public class RMWebServices {
   @GET
   @Path("/apps/{appid}/appattempts")
   @Produces({ MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML })
-  public AppAttemptsInfo getAppAttempts(@PathParam("appid") String appId) {
+  public AppAttemptsInfo getAppAttempts(@Context HttpServletRequest hsr,
+      @PathParam("appid") String appId) {
 
     init();
     if (appId == null || appId.isEmpty()) {
@@ -712,8 +720,8 @@ public class RMWebServices {
 
     AppAttemptsInfo appAttemptsInfo = new AppAttemptsInfo();
     for (RMAppAttempt attempt : app.getAppAttempts().values()) {
-      AppAttemptInfo attemptInfo =
-          new AppAttemptInfo(rm, attempt, app.getUser());
+      AppAttemptInfo attemptInfo = new AppAttemptInfo(rm, attempt,
+          app.getUser(), hsr.getScheme() + "://");
       appAttemptsInfo.add(attemptInfo);
     }
 
@@ -889,7 +897,8 @@ public class RMWebServices {
       String operation) throws IOException {
     init();
 
-    checkAndThrowIfDistributedNodeLabelConfEnabled("replaceLabelsOnNode");
+    NodeLabelsUtils.verifyCentralizedNodeLabelConfEnabled(
+        "replaceLabelsOnNode", isCentralizedNodeLabelConfiguration);
 
     UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
     if (callerUGI == null) {
@@ -1044,6 +1053,120 @@ public class RMWebServices {
       return Response.status(Status.ACCEPTED).entity(ret)
         .header(HttpHeaders.LOCATION, hsr.getRequestURL()).build();
     }
+    return Response.status(Status.OK).entity(ret).build();
+  }
+
+  @GET
+  @Path("/apps/{appid}/priority")
+  @Produces({ MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML })
+  public AppPriority getAppPriority(@Context HttpServletRequest hsr,
+      @PathParam("appid") String appId) throws AuthorizationException {
+    init();
+    UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
+    String userName = "UNKNOWN-USER";
+    if (callerUGI != null) {
+      userName = callerUGI.getUserName();
+    }
+    RMApp app = null;
+    try {
+      app = getRMAppForAppId(appId);
+    } catch (NotFoundException e) {
+      RMAuditLogger.logFailure(userName, AuditConstants.KILL_APP_REQUEST,
+          "UNKNOWN", "RMWebService",
+          "Trying to get state of an absent application " + appId);
+      throw e;
+    }
+
+    AppPriority ret = new AppPriority();
+    ret.setPriority(
+        app.getApplicationSubmissionContext().getPriority().getPriority());
+
+    return ret;
+  }
+
+  @PUT
+  @Path("/apps/{appid}/priority")
+  @Produces({ MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML })
+  @Consumes({ MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML })
+  public Response updateApplicationPriority(AppPriority targetPriority,
+      @Context HttpServletRequest hsr, @PathParam("appid") String appId)
+      throws AuthorizationException, YarnException, InterruptedException,
+          IOException {
+    init();
+    if (targetPriority == null) {
+      throw new YarnException("Target Priority cannot be null");
+    }
+
+    UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
+    if (callerUGI == null) {
+      throw new AuthorizationException(
+          "Unable to obtain user name, user not authenticated");
+    }
+
+    if (UserGroupInformation.isSecurityEnabled() && isStaticUser(callerUGI)) {
+      return Response.status(Status.FORBIDDEN)
+          .entity("The default static user cannot carry out this operation.")
+          .build();
+    }
+
+    String userName = callerUGI.getUserName();
+    RMApp app = null;
+    try {
+      app = getRMAppForAppId(appId);
+    } catch (NotFoundException e) {
+      RMAuditLogger.logFailure(userName, AuditConstants.KILL_APP_REQUEST,
+          "UNKNOWN", "RMWebService",
+          "Trying to move an absent application " + appId);
+      throw e;
+    }
+    Priority priority = app.getApplicationSubmissionContext().getPriority();
+    if (priority == null
+        || priority.getPriority() != targetPriority.getPriority()) {
+      return modifyApplicationPriority(app, callerUGI,
+          targetPriority.getPriority());
+    }
+    return Response.status(Status.OK).entity(targetPriority).build();
+  }
+
+  private Response modifyApplicationPriority(final RMApp app,
+      UserGroupInformation callerUGI, final int appPriority)
+          throws IOException, InterruptedException {
+    String userName = callerUGI.getUserName();
+    try {
+      callerUGI.doAs(new PrivilegedExceptionAction<Void>() {
+        @Override
+        public Void run() throws IOException, YarnException {
+          Priority priority = Priority.newInstance(appPriority);
+          UpdateApplicationPriorityRequest request =
+              UpdateApplicationPriorityRequest
+                  .newInstance(app.getApplicationId(), priority);
+          rm.getClientRMService().updateApplicationPriority(request);
+          return null;
+        }
+      });
+    } catch (UndeclaredThrowableException ue) {
+      // if the root cause is a permissions issue
+      // bubble that up to the user
+      if (ue.getCause() instanceof YarnException) {
+        YarnException ye = (YarnException) ue.getCause();
+        if (ye.getCause() instanceof AccessControlException) {
+          String appId = app.getApplicationId().toString();
+          String msg = "Unauthorized attempt to change priority of appid "
+              + appId + " by remote user " + userName;
+          return Response.status(Status.FORBIDDEN).entity(msg).build();
+        } else if (ye.getMessage().startsWith("Application in")
+            && ye.getMessage().endsWith("state cannot be update priority.")) {
+          return Response.status(Status.BAD_REQUEST).entity(ye.getMessage())
+              .build();
+        } else {
+          throw ue;
+        }
+      } else {
+        throw ue;
+      }
+    }
+    AppPriority ret = new AppPriority(
+        app.getApplicationSubmissionContext().getPriority().getPriority());
     return Response.status(Status.OK).entity(ret).build();
   }
 
@@ -1717,4 +1840,290 @@ public class RMWebServices {
     }
     return token;
   }
+
+  /**
+   * Function to submit a Reservation to the RM.
+   *
+   * @param resContext provides information to construct the
+   *          ReservationSubmissionRequest
+   * @param hsr the servlet request
+   * @return Response containing the status code
+   * @throws AuthorizationException
+   * @throws IOException
+   * @throws InterruptedException
+   */
+  @POST
+  @Path("/reservation/submit")
+  @Produces({ MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML })
+  @Consumes({ MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML })
+  public Response submitReservation(
+      ReservationSubmissionRequestInfo resContext,
+      @Context HttpServletRequest hsr) throws AuthorizationException,
+      IOException, InterruptedException {
+
+    init();
+    UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
+    if (callerUGI == null) {
+      throw new AuthorizationException("Unable to obtain user name, "
+          + "user not authenticated");
+    }
+    if (UserGroupInformation.isSecurityEnabled() && isStaticUser(callerUGI)) {
+      String msg = "The default static user cannot carry out this operation.";
+      return Response.status(Status.FORBIDDEN).entity(msg).build();
+    }
+
+    final ReservationSubmissionRequest reservation =
+        createReservationSubmissionRequest(resContext);
+
+    ReservationSubmissionResponseInfo resRespInfo;
+    try {
+      resRespInfo =
+          callerUGI.doAs(
+           new PrivilegedExceptionAction<ReservationSubmissionResponseInfo>() {
+                @Override
+                public ReservationSubmissionResponseInfo run()
+                    throws IOException, YarnException {
+                  ReservationSubmissionResponse tempRes =
+                      rm.getClientRMService().submitReservation(reservation);
+                  return new ReservationSubmissionResponseInfo(tempRes);
+                }
+              });
+    } catch (UndeclaredThrowableException ue) {
+      if (ue.getCause() instanceof YarnException) {
+        throw new BadRequestException(ue.getCause().getMessage());
+      }
+      LOG.info("Submit reservation request failed", ue);
+      throw ue;
+    }
+
+    return Response.status(Status.OK).entity(resRespInfo).build();
+  }
+
+  private ReservationSubmissionRequest createReservationSubmissionRequest(
+      ReservationSubmissionRequestInfo resContext) {
+
+    // defending against a couple of common submission format problems
+    if (resContext == null) {
+      throw new BadRequestException(
+          "Input ReservationSubmissionContext should not be null");
+    }
+    ReservationDefinitionInfo resInfo = resContext.getReservationDefinition();
+    if (resInfo == null) {
+      throw new BadRequestException(
+          "Input ReservationDefinition should not be null");
+    }
+
+    ReservationRequestsInfo resReqsInfo = resInfo.getReservationRequests();
+
+    if (resReqsInfo == null || resReqsInfo.getReservationRequest() == null
+        || resReqsInfo.getReservationRequest().size() == 0) {
+      throw new BadRequestException("The ReservationDefinition should"
+          + " contain at least one ReservationRequest");
+    }
+
+    ReservationRequestInterpreter[] values =
+        ReservationRequestInterpreter.values();
+    ReservationRequestInterpreter resInt =
+        values[resReqsInfo.getReservationRequestsInterpreter()];
+    List<ReservationRequest> list = new ArrayList<ReservationRequest>();
+
+    for (ReservationRequestInfo resReqInfo : resReqsInfo
+        .getReservationRequest()) {
+      ResourceInfo rInfo = resReqInfo.getCapability();
+      Resource capability =
+          Resource.newInstance(rInfo.getMemory(), rInfo.getvCores());
+      int numContainers = resReqInfo.getNumContainers();
+      int minConcurrency = resReqInfo.getMinConcurrency();
+      long duration = resReqInfo.getDuration();
+      ReservationRequest rr =
+          ReservationRequest.newInstance(capability, numContainers,
+              minConcurrency, duration);
+      list.add(rr);
+    }
+    ReservationRequests reqs = ReservationRequests.newInstance(list, resInt);
+    ReservationDefinition rDef =
+        ReservationDefinition.newInstance(resInfo.getArrival(),
+            resInfo.getDeadline(), reqs, resInfo.getReservationName());
+    ReservationSubmissionRequest request =
+        ReservationSubmissionRequest.newInstance(rDef, resContext.getQueue());
+
+    return request;
+  }
+
+  /**
+   * Function to update a Reservation to the RM.
+   *
+   * @param resContext provides information to construct the
+   *          ReservationUpdateRequest
+   * @param hsr the servlet request
+   * @return Response containing the status code
+   * @throws AuthorizationException
+   * @throws IOException
+   * @throws InterruptedException
+   */
+  @POST
+  @Path("/reservation/update")
+  @Produces({ MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML })
+  @Consumes({ MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML })
+  public Response updateReservation(ReservationUpdateRequestInfo resContext,
+      @Context HttpServletRequest hsr) throws AuthorizationException,
+      IOException, InterruptedException {
+
+    init();
+    UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
+    if (callerUGI == null) {
+      throw new AuthorizationException("Unable to obtain user name, "
+          + "user not authenticated");
+    }
+    if (UserGroupInformation.isSecurityEnabled() && isStaticUser(callerUGI)) {
+      String msg = "The default static user cannot carry out this operation.";
+      return Response.status(Status.FORBIDDEN).entity(msg).build();
+    }
+
+    final ReservationUpdateRequest reservation =
+        createReservationUpdateRequest(resContext);
+
+    ReservationUpdateResponseInfo resRespInfo;
+    try {
+      resRespInfo =
+          callerUGI.doAs(
+              new PrivilegedExceptionAction<ReservationUpdateResponseInfo>() {
+                @Override
+                public ReservationUpdateResponseInfo run() throws IOException,
+                    YarnException {
+                  rm.getClientRMService().updateReservation(reservation);
+                  return new ReservationUpdateResponseInfo();
+                }
+              });
+    } catch (UndeclaredThrowableException ue) {
+      if (ue.getCause() instanceof YarnException) {
+        throw new BadRequestException(ue.getCause().getMessage());
+      }
+      LOG.info("Update reservation request failed", ue);
+      throw ue;
+    }
+
+    return Response.status(Status.OK).entity(resRespInfo).build();
+  }
+
+  private ReservationUpdateRequest createReservationUpdateRequest(
+      ReservationUpdateRequestInfo resContext) throws IOException {
+
+    // defending against a couple of common submission format problems
+    if (resContext == null) {
+      throw new BadRequestException(
+          "Input ReservationSubmissionContext should not be null");
+    }
+    ReservationDefinitionInfo resInfo = resContext.getReservationDefinition();
+    if (resInfo == null) {
+      throw new BadRequestException(
+          "Input ReservationDefinition should not be null");
+    }
+    ReservationRequestsInfo resReqsInfo = resInfo.getReservationRequests();
+    if (resReqsInfo == null || resReqsInfo.getReservationRequest() == null
+        || resReqsInfo.getReservationRequest().size() == 0) {
+      throw new BadRequestException("The ReservationDefinition should"
+          + " contain at least one ReservationRequest");
+    }
+    if (resContext.getReservationId() == null) {
+      throw new BadRequestException(
+          "Update operations must specify an existing ReservaitonId");
+    }
+
+    ReservationRequestInterpreter[] values =
+        ReservationRequestInterpreter.values();
+    ReservationRequestInterpreter resInt =
+        values[resReqsInfo.getReservationRequestsInterpreter()];
+    List<ReservationRequest> list = new ArrayList<ReservationRequest>();
+
+    for (ReservationRequestInfo resReqInfo : resReqsInfo
+        .getReservationRequest()) {
+      ResourceInfo rInfo = resReqInfo.getCapability();
+      Resource capability =
+          Resource.newInstance(rInfo.getMemory(), rInfo.getvCores());
+      int numContainers = resReqInfo.getNumContainers();
+      int minConcurrency = resReqInfo.getMinConcurrency();
+      long duration = resReqInfo.getDuration();
+      ReservationRequest rr =
+          ReservationRequest.newInstance(capability, numContainers,
+              minConcurrency, duration);
+      list.add(rr);
+    }
+    ReservationRequests reqs = ReservationRequests.newInstance(list, resInt);
+    ReservationDefinition rDef =
+        ReservationDefinition.newInstance(resInfo.getArrival(),
+            resInfo.getDeadline(), reqs, resInfo.getReservationName());
+    ReservationUpdateRequest request =
+        ReservationUpdateRequest.newInstance(rDef, ReservationId
+            .parseReservationId(resContext.getReservationId()));
+
+    return request;
+  }
+
+  /**
+   * Function to delete a Reservation to the RM.
+   *
+   * @param resContext provides information to construct
+   *          the ReservationDeleteRequest
+   * @param hsr the servlet request
+   * @return Response containing the status code
+   * @throws AuthorizationException
+   * @throws IOException
+   * @throws InterruptedException
+   */
+  @POST
+  @Path("/reservation/delete")
+  @Produces({ MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML })
+  @Consumes({ MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML })
+  public Response deleteReservation(ReservationDeleteRequestInfo resContext,
+      @Context HttpServletRequest hsr) throws AuthorizationException,
+      IOException, InterruptedException {
+
+    init();
+    UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
+    if (callerUGI == null) {
+      throw new AuthorizationException("Unable to obtain user name, "
+          + "user not authenticated");
+    }
+    if (UserGroupInformation.isSecurityEnabled() && isStaticUser(callerUGI)) {
+      String msg = "The default static user cannot carry out this operation.";
+      return Response.status(Status.FORBIDDEN).entity(msg).build();
+    }
+
+    final ReservationDeleteRequest reservation =
+        createReservationDeleteRequest(resContext);
+
+    ReservationDeleteResponseInfo resRespInfo;
+    try {
+      resRespInfo =
+          callerUGI.doAs(
+              new PrivilegedExceptionAction<ReservationDeleteResponseInfo>() {
+                @Override
+                public ReservationDeleteResponseInfo run() throws IOException,
+                    YarnException {
+                  rm.getClientRMService().deleteReservation(reservation);
+                  return new ReservationDeleteResponseInfo();
+                }
+              });
+    } catch (UndeclaredThrowableException ue) {
+      if (ue.getCause() instanceof YarnException) {
+        throw new BadRequestException(ue.getCause().getMessage());
+      }
+      LOG.info("Update reservation request failed", ue);
+      throw ue;
+    }
+
+    return Response.status(Status.OK).entity(resRespInfo).build();
+  }
+
+  private ReservationDeleteRequest createReservationDeleteRequest(
+      ReservationDeleteRequestInfo resContext) throws IOException {
+
+    ReservationDeleteRequest request =
+        ReservationDeleteRequest.newInstance(ReservationId
+            .parseReservationId(resContext.getReservationId()));
+
+    return request;
+  }
+
 }

@@ -19,28 +19,22 @@ package org.apache.hadoop.hdfs.server.namenode;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
-import com.google.common.collect.Lists;
 import com.google.protobuf.InvalidProtocolBufferException;
+
 import org.apache.hadoop.HadoopIllegalArgumentException;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.crypto.CipherSuite;
-import org.apache.hadoop.crypto.CryptoProtocolVersion;
-import org.apache.hadoop.fs.FileEncryptionInfo;
+import org.apache.hadoop.crypto.key.KeyProviderCryptoExtension;
 import org.apache.hadoop.fs.ParentNotDirectoryException;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.fs.UnresolvedLinkException;
 import org.apache.hadoop.fs.XAttr;
-import org.apache.hadoop.fs.XAttrSetFlag;
 import org.apache.hadoop.fs.permission.FsAction;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DFSUtil;
-import org.apache.hadoop.hdfs.XAttrHelper;
-import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.BlockStoragePolicy;
-import org.apache.hadoop.hdfs.protocol.EncryptionZone;
 import org.apache.hadoop.hdfs.protocol.FSLimitException.MaxDirectoryItemsExceededException;
 import org.apache.hadoop.hdfs.protocol.FSLimitException.PathComponentTooLongException;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
@@ -48,16 +42,18 @@ import org.apache.hadoop.hdfs.protocol.HdfsFileStatus;
 import org.apache.hadoop.hdfs.protocol.QuotaExceededException;
 import org.apache.hadoop.hdfs.protocol.SnapshotAccessControlException;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos;
-import org.apache.hadoop.hdfs.protocolPB.PBHelper;
+import org.apache.hadoop.hdfs.protocolPB.PBHelperClient;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockStoragePolicySuite;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants;
-import org.apache.hadoop.hdfs.server.namenode.INode.BlocksMapUpdateInfo;
+import org.apache.hadoop.hdfs.server.namenode.INode.BlocksMapUpdateInfo.UpdatedReplicationInfo;
 import org.apache.hadoop.hdfs.util.ByteArray;
 import org.apache.hadoop.hdfs.util.EnumCounters;
+import org.apache.hadoop.hdfs.util.ReadOnlyList;
 import org.apache.hadoop.security.AccessControlException;
 import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.util.Time;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -66,12 +62,16 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.EnumSet;
+import java.util.Collection;
+import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.RecursiveAction;
 import java.util.List;
 import java.util.Map;
+import java.util.SortedSet;
+import java.util.TreeSet;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
-import static org.apache.hadoop.fs.BatchedRemoteIterator.BatchedListEntries;
+import static org.apache.hadoop.fs.CommonConfigurationKeys.FS_PROTECTED_DIRECTORIES;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_ACCESSTIME_PRECISION_DEFAULT;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_ACCESSTIME_PRECISION_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_QUOTA_BY_STORAGETYPE_ENABLED_DEFAULT;
@@ -79,7 +79,6 @@ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_QUOTA_BY_STORAGETYPE_ENAB
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_STORAGE_POLICY_ENABLED_DEFAULT;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_STORAGE_POLICY_ENABLED_KEY;
 import static org.apache.hadoop.hdfs.server.common.HdfsServerConstants.CRYPTO_XATTR_ENCRYPTION_ZONE;
-import static org.apache.hadoop.hdfs.server.common.HdfsServerConstants.CRYPTO_XATTR_FILE_ENCRYPTION_INFO;
 import static org.apache.hadoop.hdfs.server.common.HdfsServerConstants.SECURITY_XATTR_UNREADABLE_BY_SUPERUSER;
 import static org.apache.hadoop.hdfs.server.namenode.snapshot.Snapshot.CURRENT_STATE_ID;
 
@@ -123,6 +122,11 @@ public class FSDirectory implements Closeable {
   public final static byte[] DOT_INODES = 
       DFSUtil.string2Bytes(DOT_INODES_STRING);
 
+  public final static HdfsFileStatus DOT_RESERVED_STATUS =
+      new HdfsFileStatus(0, true, 0, 0, 0, 0, new FsPermission((short) 01770),
+          null, null, null, HdfsFileStatus.EMPTY_NAME, -1L, 0, null,
+          HdfsConstants.BLOCK_STORAGE_POLICY_ID_UNSPECIFIED, null);
+
   INodeDirectory rootDir;
   private final FSNamesystem namesystem;
   private volatile boolean skipQuotaCheck = false; //skip while consuming edits
@@ -133,8 +137,16 @@ public class FSDirectory implements Closeable {
   private final long contentSleepMicroSec;
   private final INodeMap inodeMap; // Synchronized by dirLock
   private long yieldCount = 0; // keep track of lock yield count.
+  private int quotaInitThreads;
 
   private final int inodeXAttrsLimit; //inode xattrs max limit
+
+  // A set of directories that have been protected using the
+  // dfs.namenode.protected.directories setting. These directories cannot
+  // be deleted unless they are empty.
+  //
+  // Each entry in this set must be a normalized path.
+  private final SortedSet<String> protectedDirectories;
 
   // lock to protect the directory and BlockMap
   private final ReentrantReadWriteLock dirLock;
@@ -161,6 +173,8 @@ public class FSDirectory implements Closeable {
   private final INodeId inodeId;
 
   private final FSEditLog editLog;
+
+  private HdfsFileStatus[] reservedStatuses;
 
   private INodeAttributeProvider attributeProvider;
 
@@ -234,11 +248,14 @@ public class FSDirectory implements Closeable {
     this.xattrMaxSize = conf.getInt(
         DFSConfigKeys.DFS_NAMENODE_MAX_XATTR_SIZE_KEY,
         DFSConfigKeys.DFS_NAMENODE_MAX_XATTR_SIZE_DEFAULT);
-    Preconditions.checkArgument(xattrMaxSize >= 0,
-                                "Cannot set a negative value for the maximum size of an xattr (%s).",
-                                DFSConfigKeys.DFS_NAMENODE_MAX_XATTR_SIZE_KEY);
-    final String unlimited = xattrMaxSize == 0 ? " (unlimited)" : "";
-    LOG.info("Maximum size of an xattr: " + xattrMaxSize + unlimited);
+    Preconditions.checkArgument(xattrMaxSize > 0,
+        "The maximum size of an xattr should be > 0: (%s).",
+        DFSConfigKeys.DFS_NAMENODE_MAX_XATTR_SIZE_KEY);
+    Preconditions.checkArgument(xattrMaxSize <=
+        DFSConfigKeys.DFS_NAMENODE_MAX_XATTR_SIZE_HARD_LIMIT,
+        "The maximum size of an xattr should be <= maximum size"
+        + " hard limit " + DFSConfigKeys.DFS_NAMENODE_MAX_XATTR_SIZE_HARD_LIMIT
+        + ": (%s).", DFSConfigKeys.DFS_NAMENODE_MAX_XATTR_SIZE_KEY);
 
     this.accessTimePrecision = conf.getLong(
         DFS_NAMENODE_ACCESSTIME_PRECISION_KEY,
@@ -274,6 +291,8 @@ public class FSDirectory implements Closeable {
         DFSConfigKeys.DFS_NAMENODE_MAX_XATTRS_PER_INODE_KEY,
         DFSConfigKeys.DFS_NAMENODE_MAX_XATTRS_PER_INODE_DEFAULT);
 
+    this.protectedDirectories = parseProtectedDirectories(conf);
+
     Preconditions.checkArgument(this.inodeXAttrsLimit >= 0,
         "Cannot set a negative limit on the number of xattrs per inode (%s).",
         DFSConfigKeys.DFS_NAMENODE_MAX_XATTRS_PER_INODE_KEY);
@@ -295,14 +314,78 @@ public class FSDirectory implements Closeable {
     namesystem = ns;
     this.editLog = ns.getEditLog();
     ezManager = new EncryptionZoneManager(this, conf);
+
+    this.quotaInitThreads = conf.getInt(
+        DFSConfigKeys.DFS_NAMENODE_QUOTA_INIT_THREADS_KEY,
+        DFSConfigKeys.DFS_NAMENODE_QUOTA_INIT_THREADS_DEFAULT);
   }
-    
+
+  /**
+   * Get HdfsFileStatuses of the reserved paths: .inodes and raw.
+   *
+   * @return Array of HdfsFileStatus
+   */
+  HdfsFileStatus[] getReservedStatuses() {
+    Preconditions.checkNotNull(reservedStatuses, "reservedStatuses should "
+        + " not be null. It is populated when FSNamesystem loads FS image."
+        + " It has to be set at this time instead of initialization time"
+        + " because CTime is loaded during FSNamesystem#loadFromDisk.");
+    return reservedStatuses;
+  }
+
+  /**
+   * Create HdfsFileStatuses of the reserved paths: .inodes and raw.
+   * These statuses are solely for listing purpose. All other operations
+   * on the reserved dirs are disallowed.
+   * Operations on sub directories are resolved by
+   * {@link FSDirectory#resolvePath(String, byte[][], FSDirectory)}
+   * and conducted directly, without the need to check the reserved dirs.
+   *
+   * This method should only be invoked once during namenode initialization.
+   *
+   * @param cTime CTime of the file system
+   * @return Array of HdfsFileStatus
+   */
+  void createReservedStatuses(long cTime) {
+    HdfsFileStatus inodes = new HdfsFileStatus(0, true, 0, 0, cTime, cTime,
+        new FsPermission((short) 0770), null, supergroup, null,
+        DOT_INODES, -1L, 0, null,
+        HdfsConstants.BLOCK_STORAGE_POLICY_ID_UNSPECIFIED, null);
+    HdfsFileStatus raw = new HdfsFileStatus(0, true, 0, 0, cTime, cTime,
+        new FsPermission((short) 0770), null, supergroup, null, RAW, -1L,
+        0, null, HdfsConstants.BLOCK_STORAGE_POLICY_ID_UNSPECIFIED, null);
+    reservedStatuses = new HdfsFileStatus[] {inodes, raw};
+  }
+
   FSNamesystem getFSNamesystem() {
     return namesystem;
   }
 
+  /**
+   * Parse configuration setting dfs.namenode.protected.directories to
+   * retrieve the set of protected directories.
+   *
+   * @param conf
+   * @return a TreeSet
+   */
+  @VisibleForTesting
+  static SortedSet<String> parseProtectedDirectories(Configuration conf) {
+    // Normalize each input path to guard against administrator error.
+    return new TreeSet<>(normalizePaths(
+        conf.getTrimmedStringCollection(FS_PROTECTED_DIRECTORIES),
+        FS_PROTECTED_DIRECTORIES));
+  }
+
+  SortedSet<String> getProtectedDirectories() {
+    return protectedDirectories;
+  }
+
   BlockManager getBlockManager() {
     return getFSNamesystem().getBlockManager();
+  }
+
+  KeyProviderCryptoExtension getProvider() {
+    return getFSNamesystem().getProvider();
   }
 
   /** @return the root directory inode. */
@@ -453,6 +536,139 @@ public class FSDirectory implements Closeable {
     }
   }
 
+  /**
+   * Tell the block manager to update the replication factors when delete
+   * happens. Deleting a file or a snapshot might decrease the replication
+   * factor of the blocks as the blocks are always replicated to the highest
+   * replication factor among all snapshots.
+   */
+  void updateReplicationFactor(Collection<UpdatedReplicationInfo> blocks) {
+    BlockManager bm = getBlockManager();
+    for (UpdatedReplicationInfo e : blocks) {
+      BlockInfo b = e.block();
+      bm.setReplication(b.getReplication(), e.targetReplication(), b);
+    }
+  }
+
+  /**
+   * Update the count of each directory with quota in the namespace.
+   * A directory's count is defined as the total number inodes in the tree
+   * rooted at the directory.
+   *
+   * This is an update of existing state of the filesystem and does not
+   * throw QuotaExceededException.
+   */
+  void updateCountForQuota(int initThreads) {
+    writeLock();
+    try {
+      int threads = (initThreads < 1) ? 1 : initThreads;
+      LOG.info("Initializing quota with " + threads + " thread(s)");
+      long start = Time.now();
+      QuotaCounts counts = new QuotaCounts.Builder().build();
+      ForkJoinPool p = new ForkJoinPool(threads);
+      RecursiveAction task = new InitQuotaTask(getBlockStoragePolicySuite(),
+          rootDir.getStoragePolicyID(), rootDir, counts);
+      p.execute(task);
+      task.join();
+      p.shutdown();
+      LOG.info("Quota initialization completed in " + (Time.now() - start) +
+          " milliseconds\n" + counts);
+    } finally {
+      writeUnlock();
+    }
+  }
+
+  void updateCountForQuota() {
+    updateCountForQuota(quotaInitThreads);
+  }
+
+  /**
+   * parallel initialization using fork-join.
+   */
+  private static class InitQuotaTask extends RecursiveAction {
+    private final INodeDirectory dir;
+    private final QuotaCounts counts;
+    private final BlockStoragePolicySuite bsps;
+    private final byte blockStoragePolicyId;
+
+    public InitQuotaTask(BlockStoragePolicySuite bsps,
+        byte blockStoragePolicyId, INodeDirectory dir, QuotaCounts counts) {
+      this.dir = dir;
+      this.counts = counts;
+      this.bsps = bsps;
+      this.blockStoragePolicyId = blockStoragePolicyId;
+    }
+
+    public void compute() {
+      QuotaCounts myCounts =  new QuotaCounts.Builder().build();
+      dir.computeQuotaUsage4CurrentDirectory(bsps, blockStoragePolicyId,
+          myCounts);
+
+      ReadOnlyList<INode> children =
+          dir.getChildrenList(CURRENT_STATE_ID);
+
+      if (children.size() > 0) {
+        List<InitQuotaTask> subtasks = new ArrayList<InitQuotaTask>();
+        for (INode child : children) {
+          final byte childPolicyId =
+              child.getStoragePolicyIDForQuota(blockStoragePolicyId);
+          if (child.isDirectory()) {
+            subtasks.add(new InitQuotaTask(bsps, childPolicyId,
+                child.asDirectory(), myCounts));
+          } else {
+            // file or symlink. count using the local counts variable
+            myCounts.add(child.computeQuotaUsage(bsps, childPolicyId, false,
+                CURRENT_STATE_ID));
+          }
+        }
+        // invoke and wait for completion
+        invokeAll(subtasks);
+      }
+
+      if (dir.isQuotaSet()) {
+        // check if quota is violated. It indicates a software bug.
+        final QuotaCounts q = dir.getQuotaCounts();
+
+        final long nsConsumed = myCounts.getNameSpace();
+        final long nsQuota = q.getNameSpace();
+        if (Quota.isViolated(nsQuota, nsConsumed)) {
+          LOG.warn("Namespace quota violation in image for "
+              + dir.getFullPathName()
+              + " quota = " + nsQuota + " < consumed = " + nsConsumed);
+        }
+
+        final long ssConsumed = myCounts.getStorageSpace();
+        final long ssQuota = q.getStorageSpace();
+        if (Quota.isViolated(ssQuota, ssConsumed)) {
+          LOG.warn("Storagespace quota violation in image for "
+              + dir.getFullPathName()
+              + " quota = " + ssQuota + " < consumed = " + ssConsumed);
+        }
+
+        final EnumCounters<StorageType> tsConsumed = myCounts.getTypeSpaces();
+        for (StorageType t : StorageType.getTypesSupportingQuota()) {
+          final long typeSpace = tsConsumed.get(t);
+          final long typeQuota = q.getTypeSpaces().get(t);
+          if (Quota.isViolated(typeQuota, typeSpace)) {
+            LOG.warn("Storage type quota violation in image for "
+                + dir.getFullPathName()
+                + " type = " + t.toString() + " quota = "
+                + typeQuota + " < consumed " + typeSpace);
+          }
+        }
+        if (LOG.isDebugEnabled()) {
+          LOG.debug("Setting quota for " + dir + "\n" + myCounts);
+        }
+        dir.getDirectoryWithQuotaFeature().setSpaceConsumed(nsConsumed,
+            ssConsumed, tsConsumed);
+      }
+
+      synchronized(counts) {
+        counts.add(myCounts);
+      }
+    }
+  }
+
   /** Updates namespace, storagespace and typespaces consumed for all
    * directories until the parent directory of file represented by path.
    *
@@ -516,7 +732,7 @@ public class FSDirectory implements Closeable {
     final INodeFile fileINode = iip.getLastINode().asFile();
     EnumCounters<StorageType> typeSpaceDeltas =
       getStorageTypeDeltas(fileINode.getStoragePolicyID(), ssDelta,
-          replication, replication);;
+          replication, replication);
     updateCount(iip, iip.length() - 1,
       new QuotaCounts.Builder().nameSpace(nsDelta).storageSpace(ssDelta * replication).
           typeSpaces(typeSpaceDeltas).build(),
@@ -887,6 +1103,38 @@ public class FSDirectory implements Closeable {
         && INodeReference.tryRemoveReference(last) > 0) ? 0 : 1;
   }
 
+  /**
+   * Return a new collection of normalized paths from the given input
+   * collection. The input collection is unmodified.
+   *
+   * Reserved paths, relative paths and paths with scheme are ignored.
+   *
+   * @param paths collection whose contents are to be normalized.
+   * @return collection with all input paths normalized.
+   */
+  static Collection<String> normalizePaths(Collection<String> paths,
+                                           String errorString) {
+    if (paths.isEmpty()) {
+      return paths;
+    }
+    final Collection<String> normalized = new ArrayList<>(paths.size());
+    for (String dir : paths) {
+      if (isReservedName(dir)) {
+        LOG.error("{} ignoring reserved path {}", errorString, dir);
+      } else {
+        final Path path = new Path(dir);
+        if (!path.isAbsolute()) {
+          LOG.error("{} ignoring relative path {}", errorString, dir);
+        } else if (path.toUri().getScheme() != null) {
+          LOG.error("{} ignoring path {} with scheme", errorString, dir);
+        } else {
+          normalized.add(path.toString());
+        }
+      }
+    }
+    return normalized;
+  }
+
   static String normalizePath(String src) {
     if (src.length() > 1 && src.endsWith("/")) {
       src = src.substring(0, src.length() - 1);
@@ -908,98 +1156,6 @@ public class FSDirectory implements Closeable {
   }
 
   /**
-   * FSEditLogLoader implementation.
-   * Unlike FSNamesystem.truncate, this will not schedule block recovery.
-   */
-  void unprotectedTruncate(String src, String clientName, String clientMachine,
-                           long newLength, long mtime, Block truncateBlock)
-      throws UnresolvedLinkException, QuotaExceededException,
-      SnapshotAccessControlException, IOException {
-    INodesInPath iip = getINodesInPath(src, true);
-    INodeFile file = iip.getLastINode().asFile();
-    BlocksMapUpdateInfo collectedBlocks = new BlocksMapUpdateInfo();
-    boolean onBlockBoundary =
-        unprotectedTruncate(iip, newLength, collectedBlocks, mtime, null);
-
-    if(! onBlockBoundary) {
-      BlockInfo oldBlock = file.getLastBlock();
-      Block tBlk =
-      getFSNamesystem().prepareFileForTruncate(iip,
-          clientName, clientMachine, file.computeFileSize() - newLength,
-          truncateBlock);
-      assert Block.matchingIdAndGenStamp(tBlk, truncateBlock) &&
-          tBlk.getNumBytes() == truncateBlock.getNumBytes() :
-          "Should be the same block.";
-      if(oldBlock.getBlockId() != tBlk.getBlockId() &&
-         !file.isBlockInLatestSnapshot(oldBlock)) {
-        getBlockManager().removeBlockFromMap(oldBlock);
-      }
-    }
-    assert onBlockBoundary == (truncateBlock == null) :
-      "truncateBlock is null iff on block boundary: " + truncateBlock;
-    getFSNamesystem().removeBlocksAndUpdateSafemodeTotal(collectedBlocks);
-  }
-
-  boolean truncate(INodesInPath iip, long newLength,
-                   BlocksMapUpdateInfo collectedBlocks,
-                   long mtime, QuotaCounts delta)
-      throws IOException {
-    writeLock();
-    try {
-      return unprotectedTruncate(iip, newLength, collectedBlocks, mtime, delta);
-    } finally {
-      writeUnlock();
-    }
-  }
-
-  /**
-   * Truncate has the following properties:
-   * 1.) Any block deletions occur now.
-   * 2.) INode length is truncated now – new clients can only read up to
-   * the truncated length.
-   * 3.) INode will be set to UC and lastBlock set to UNDER_RECOVERY.
-   * 4.) NN will trigger DN truncation recovery and waits for DNs to report.
-   * 5.) File is considered UNDER_RECOVERY until truncation recovery completes.
-   * 6.) Soft and hard Lease expiration require truncation recovery to complete.
-   *
-   * @return true if on the block boundary or false if recovery is need
-   */
-  boolean unprotectedTruncate(INodesInPath iip, long newLength,
-                              BlocksMapUpdateInfo collectedBlocks,
-                              long mtime, QuotaCounts delta) throws IOException {
-    assert hasWriteLock();
-    INodeFile file = iip.getLastINode().asFile();
-    int latestSnapshot = iip.getLatestSnapshotId();
-    file.recordModification(latestSnapshot, true);
-
-    verifyQuotaForTruncate(iip, file, newLength, delta);
-
-    long remainingLength =
-        file.collectBlocksBeyondMax(newLength, collectedBlocks);
-    file.excludeSnapshotBlocks(latestSnapshot, collectedBlocks);
-    file.setModificationTime(mtime);
-    // return whether on a block boundary
-    return (remainingLength - newLength) == 0;
-  }
-
-  private void verifyQuotaForTruncate(INodesInPath iip, INodeFile file,
-      long newLength, QuotaCounts delta) throws QuotaExceededException {
-    if (!getFSNamesystem().isImageLoaded() || shouldSkipQuotaChecks()) {
-      // Do not check quota if edit log is still being processed
-      return;
-    }
-    final BlockStoragePolicy policy = getBlockStoragePolicySuite()
-        .getPolicy(file.getStoragePolicyID());
-    file.computeQuotaDeltaForTruncate(newLength, policy, delta);
-    readLock();
-    try {
-      verifyQuota(iip, iip.length() - 1, delta, null);
-    } finally {
-      readUnlock();
-    }
-  }
-
-  /**
    * This method is always called with writeLock of FSDirectory held.
    */
   public final void addToInodeMap(INode inode) {
@@ -1007,30 +1163,42 @@ public class FSDirectory implements Closeable {
       inodeMap.put(inode);
       if (!inode.isSymlink()) {
         final XAttrFeature xaf = inode.getXAttrFeature();
-        if (xaf != null) {
-          final List<XAttr> xattrs = xaf.getXAttrs();
-          for (XAttr xattr : xattrs) {
-            final String xaName = XAttrHelper.getPrefixName(xattr);
-            if (CRYPTO_XATTR_ENCRYPTION_ZONE.equals(xaName)) {
-              try {
-                final HdfsProtos.ZoneEncryptionInfoProto ezProto =
-                    HdfsProtos.ZoneEncryptionInfoProto.parseFrom(
-                        xattr.getValue());
-                ezManager.unprotectedAddEncryptionZone(inode.getId(),
-                    PBHelper.convert(ezProto.getSuite()),
-                    PBHelper.convert(ezProto.getCryptoProtocolVersion()),
-                    ezProto.getKeyName());
-              } catch (InvalidProtocolBufferException e) {
-                NameNode.LOG.warn("Error parsing protocol buffer of " +
-                    "EZ XAttr " + xattr.getName());
-              }
-            }
-          }
-        }
+        addEncryptionZone((INodeWithAdditionalFields) inode, xaf);
       }
     }
   }
+
+  private void addEncryptionZone(INodeWithAdditionalFields inode,
+      XAttrFeature xaf) {
+    if (xaf == null) {
+      return;
+    }
+    XAttr xattr = xaf.getXAttr(CRYPTO_XATTR_ENCRYPTION_ZONE);
+    if (xattr == null) {
+      return;
+    }
+    try {
+      final HdfsProtos.ZoneEncryptionInfoProto ezProto =
+          HdfsProtos.ZoneEncryptionInfoProto.parseFrom(
+              xattr.getValue());
+      ezManager.unprotectedAddEncryptionZone(inode.getId(),
+          PBHelperClient.convert(ezProto.getSuite()),
+          PBHelperClient.convert(ezProto.getCryptoProtocolVersion()),
+          ezProto.getKeyName());
+    } catch (InvalidProtocolBufferException e) {
+      NameNode.LOG.warn("Error parsing protocol buffer of " +
+          "EZ XAttr " + xattr.getName() + " dir:" + inode.getFullPathName());
+    }
+  }
   
+  /**
+   * This is to handle encryption zone for rootDir when loading from
+   * fsimage, and should only be called during NN restart.
+   */
+  public final void addRootDirToEncryptionZone(XAttrFeature xaf) {
+    addEncryptionZone(rootDir, xaf);
+  }
+
   /**
    * This method is always called with writeLock of FSDirectory held.
    */
@@ -1065,13 +1233,7 @@ public class FSDirectory implements Closeable {
   }
 
   long totalInodes() {
-    readLock();
-    try {
-      return rootDir.getDirectoryWithQuotaFeature().getSpaceConsumed()
-          .getNameSpace();
-    } finally {
-      readUnlock();
-    }
+    return getInodeMapSize();
   }
 
   /**
@@ -1087,139 +1249,6 @@ public class FSDirectory implements Closeable {
       inodeId.setCurrentValue(INodeId.LAST_RESERVED_ID);
     } finally {
       writeUnlock();
-    }
-  }
-
-  boolean isInAnEZ(INodesInPath iip)
-      throws UnresolvedLinkException, SnapshotAccessControlException {
-    readLock();
-    try {
-      return ezManager.isInAnEZ(iip);
-    } finally {
-      readUnlock();
-    }
-  }
-
-  String getKeyName(INodesInPath iip) {
-    readLock();
-    try {
-      return ezManager.getKeyName(iip);
-    } finally {
-      readUnlock();
-    }
-  }
-
-  XAttr createEncryptionZone(String src, CipherSuite suite,
-      CryptoProtocolVersion version, String keyName)
-    throws IOException {
-    writeLock();
-    try {
-      return ezManager.createEncryptionZone(src, suite, version, keyName);
-    } finally {
-      writeUnlock();
-    }
-  }
-
-  EncryptionZone getEZForPath(INodesInPath iip) {
-    readLock();
-    try {
-      return ezManager.getEZINodeForPath(iip);
-    } finally {
-      readUnlock();
-    }
-  }
-
-  BatchedListEntries<EncryptionZone> listEncryptionZones(long prevId)
-      throws IOException {
-    readLock();
-    try {
-      return ezManager.listEncryptionZones(prevId);
-    } finally {
-      readUnlock();
-    }
-  }
-
-  /**
-   * Set the FileEncryptionInfo for an INode.
-   */
-  void setFileEncryptionInfo(String src, FileEncryptionInfo info)
-      throws IOException {
-    // Make the PB for the xattr
-    final HdfsProtos.PerFileEncryptionInfoProto proto =
-        PBHelper.convertPerFileEncInfo(info);
-    final byte[] protoBytes = proto.toByteArray();
-    final XAttr fileEncryptionAttr =
-        XAttrHelper.buildXAttr(CRYPTO_XATTR_FILE_ENCRYPTION_INFO, protoBytes);
-    final List<XAttr> xAttrs = Lists.newArrayListWithCapacity(1);
-    xAttrs.add(fileEncryptionAttr);
-
-    writeLock();
-    try {
-      FSDirXAttrOp.unprotectedSetXAttrs(this, src, xAttrs,
-                                        EnumSet.of(XAttrSetFlag.CREATE));
-    } finally {
-      writeUnlock();
-    }
-  }
-
-  /**
-   * This function combines the per-file encryption info (obtained
-   * from the inode's XAttrs), and the encryption info from its zone, and
-   * returns a consolidated FileEncryptionInfo instance. Null is returned
-   * for non-encrypted files.
-   *
-   * @param inode inode of the file
-   * @param snapshotId ID of the snapshot that
-   *                   we want to get encryption info from
-   * @param iip inodes in the path containing the file, passed in to
-   *            avoid obtaining the list of inodes again; if iip is
-   *            null then the list of inodes will be obtained again
-   * @return consolidated file encryption info; null for non-encrypted files
-   */
-  FileEncryptionInfo getFileEncryptionInfo(INode inode, int snapshotId,
-      INodesInPath iip) throws IOException {
-    if (!inode.isFile()) {
-      return null;
-    }
-    readLock();
-    try {
-      EncryptionZone encryptionZone = getEZForPath(iip);
-      if (encryptionZone == null) {
-        // not an encrypted file
-        return null;
-      } else if(encryptionZone.getPath() == null
-          || encryptionZone.getPath().isEmpty()) {
-        if (NameNode.LOG.isDebugEnabled()) {
-          NameNode.LOG.debug("Encryption zone " +
-              encryptionZone.getPath() + " does not have a valid path.");
-        }
-      }
-
-      final CryptoProtocolVersion version = encryptionZone.getVersion();
-      final CipherSuite suite = encryptionZone.getSuite();
-      final String keyName = encryptionZone.getKeyName();
-
-      XAttr fileXAttr = FSDirXAttrOp.unprotectedGetXAttrByName(inode,
-                                                               snapshotId,
-                                                               CRYPTO_XATTR_FILE_ENCRYPTION_INFO);
-
-      if (fileXAttr == null) {
-        NameNode.LOG.warn("Could not find encryption XAttr for file " +
-            iip.getPath() + " in encryption zone " + encryptionZone.getPath());
-        return null;
-      }
-
-      try {
-        HdfsProtos.PerFileEncryptionInfoProto fileProto =
-            HdfsProtos.PerFileEncryptionInfoProto.parseFrom(
-                fileXAttr.getValue());
-        return PBHelper.convert(fileProto, suite, version, keyName);
-      } catch (InvalidProtocolBufferException e) {
-        throw new IOException("Could not parse file encryption info for " +
-            "inode " + inode, e);
-      }
-    } finally {
-      readUnlock();
     }
   }
 
@@ -1287,9 +1316,18 @@ public class FSDirectory implements Closeable {
     return src.startsWith(DOT_RESERVED_PATH_PREFIX + Path.SEPARATOR);
   }
 
+  public static boolean isExactReservedName(String src) {
+    return CHECK_RESERVED_FILE_NAMES && src.equals(DOT_RESERVED_PATH_PREFIX);
+  }
+
   static boolean isReservedRawName(String src) {
     return src.startsWith(DOT_RESERVED_PATH_PREFIX +
         Path.SEPARATOR + RAW_STRING);
+  }
+
+  static boolean isReservedInodesName(String src) {
+    return src.startsWith(DOT_RESERVED_PATH_PREFIX +
+        Path.SEPARATOR + DOT_INODES_STRING);
   }
 
   /**
@@ -1343,7 +1381,13 @@ public class FSDirectory implements Closeable {
       if (nComponents == 3) {
         return Path.SEPARATOR;
       } else {
-        return constructRemainingPath("", pathComponents, 3);
+        if (nComponents == 4
+            && Arrays.equals(DOT_RESERVED, pathComponents[3])) {
+          /* It's /.reserved/raw/.reserved so don't strip */
+          return src;
+        } else {
+          return constructRemainingPath("", pathComponents, 3);
+        }
       }
     } else {
       /* It's some sort of /.reserved/<unknown> path. Ignore it. */
@@ -1559,13 +1603,11 @@ public class FSDirectory implements Closeable {
       FSPermissionChecker pc, INode inode, int snapshotId)
       throws IOException {
     if (pc.isSuperUser()) {
-      for (XAttr xattr : FSDirXAttrOp.getXAttrs(this, inode, snapshotId)) {
-        if (XAttrHelper.getPrefixName(xattr).
-            equals(SECURITY_XATTR_UNREADABLE_BY_SUPERUSER)) {
-          throw new AccessControlException(
-              "Access is denied for " + pc.getUser() + " since the superuser "
-              + "is not allowed to perform this operation.");
-        }
+      if (FSDirXAttrOp.getXAttrByPrefixedName(this, inode, snapshotId,
+          SECURITY_XATTR_UNREADABLE_BY_SUPERUSER) != null) {
+        throw new AccessControlException(
+            "Access is denied for " + pc.getUser() + " since the superuser "
+            + "is not allowed to perform this operation.");
       }
     }
   }

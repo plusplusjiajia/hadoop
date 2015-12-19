@@ -20,6 +20,7 @@ package org.apache.hadoop.yarn.client.cli;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Matchers.any;
 import static org.mockito.Matchers.anyInt;
@@ -27,6 +28,7 @@ import static org.mockito.Matchers.argThat;
 import static org.mockito.Matchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -34,6 +36,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.util.HashSet;
+import java.util.Map;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.ha.HAServiceProtocol;
@@ -42,6 +45,8 @@ import org.apache.hadoop.ha.HAServiceTarget;
 import org.apache.hadoop.service.Service.STATE;
 import org.apache.hadoop.yarn.api.records.DecommissionType;
 import org.apache.hadoop.yarn.api.records.NodeId;
+import org.apache.hadoop.yarn.api.records.Resource;
+import org.apache.hadoop.yarn.api.records.ResourceOption;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.nodelabels.CommonNodeLabelsManager;
@@ -52,14 +57,19 @@ import org.apache.hadoop.yarn.server.api.protocolrecords.AddToClusterNodeLabelsR
 import org.apache.hadoop.yarn.server.api.protocolrecords.CheckForDecommissioningNodesRequest;
 import org.apache.hadoop.yarn.server.api.protocolrecords.CheckForDecommissioningNodesResponse;
 import org.apache.hadoop.yarn.server.api.protocolrecords.RefreshAdminAclsRequest;
+import org.apache.hadoop.yarn.server.api.protocolrecords.RefreshClusterMaxPriorityRequest;
 import org.apache.hadoop.yarn.server.api.protocolrecords.RefreshNodesRequest;
 import org.apache.hadoop.yarn.server.api.protocolrecords.RefreshQueuesRequest;
 import org.apache.hadoop.yarn.server.api.protocolrecords.RefreshServiceAclsRequest;
 import org.apache.hadoop.yarn.server.api.protocolrecords.RefreshSuperUserGroupsConfigurationRequest;
 import org.apache.hadoop.yarn.server.api.protocolrecords.RefreshUserToGroupsMappingsRequest;
+import org.apache.hadoop.yarn.server.api.protocolrecords.UpdateNodeResourceRequest;
+import org.apache.hadoop.yarn.util.ConverterUtils;
 import org.apache.hadoop.yarn.util.Records;
+import org.apache.hadoop.yarn.util.resource.Resources;
 import org.junit.Before;
 import org.junit.Test;
+import org.mockito.ArgumentCaptor;
 import org.mockito.ArgumentMatcher;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
@@ -116,6 +126,7 @@ public class TestRMAdminCLI {
 
     YarnConfiguration conf = new YarnConfiguration();
     conf.setBoolean(YarnConfiguration.RM_HA_ENABLED, true);
+    conf.set(YarnConfiguration.RM_HA_IDS, "rm1,rm2");
     rmAdminCLIWithHAEnabled = new RMAdminCLI(conf) {
 
       @Override
@@ -168,11 +179,57 @@ public class TestRMAdminCLI {
     verify(admin).refreshAdminAcls(any(RefreshAdminAclsRequest.class));
   }
 
+  @Test(timeout = 5000)
+  public void testRefreshClusterMaxPriority() throws Exception {
+    String[] args = { "-refreshClusterMaxPriority" };
+    assertEquals(0, rmAdminCLI.run(args));
+    verify(admin).refreshClusterMaxPriority(
+        any(RefreshClusterMaxPriorityRequest.class));
+  }
+
   @Test(timeout=500)
   public void testRefreshServiceAcl() throws Exception {
     String[] args = { "-refreshServiceAcl" };
     assertEquals(0, rmAdminCLI.run(args));
     verify(admin).refreshServiceAcls(any(RefreshServiceAclsRequest.class));
+  }
+
+  @Test(timeout=500)
+  public void testUpdateNodeResource() throws Exception {
+    String nodeIdStr = "0.0.0.0:0";
+    int memSize = 2048;
+    int cores = 2;
+    String[] args = { "-updateNodeResource", nodeIdStr,
+        Integer.toString(memSize), Integer.toString(cores) };
+    assertEquals(0, rmAdminCLI.run(args));
+    ArgumentCaptor<UpdateNodeResourceRequest> argument =
+        ArgumentCaptor.forClass(UpdateNodeResourceRequest.class);
+    verify(admin).updateNodeResource(argument.capture());
+    UpdateNodeResourceRequest request = argument.getValue();
+    Map<NodeId, ResourceOption> resourceMap = request.getNodeResourceMap();
+    NodeId nodeId = ConverterUtils.toNodeId(nodeIdStr);
+    Resource expectedResource = Resources.createResource(memSize, cores);
+    ResourceOption resource = resourceMap.get(nodeId);
+    assertNotNull("resource for " + nodeIdStr + " shouldn't be null.",
+        resource);
+    assertEquals("resource value for " + nodeIdStr + " is not as expected.",
+        ResourceOption.newInstance(expectedResource,
+            ResourceOption.OVER_COMMIT_TIMEOUT_MILLIS_DEFAULT),
+        resource);
+  }
+
+  @Test(timeout=500)
+  public void testUpdateNodeResourceWithInvalidValue() throws Exception {
+    String nodeIdStr = "0.0.0.0:0";
+    int memSize = -2048;
+    int cores = 2;
+    String[] args = { "-updateNodeResource", nodeIdStr,
+        Integer.toString(memSize), Integer.toString(cores) };
+    // execution of command line is expected to be failed
+    assertEquals(-1, rmAdminCLI.run(args));
+    // verify admin protocol never calls. 
+    verify(admin,times(0)).updateNodeResource(
+        any(UpdateNodeResourceRequest.class));
   }
 
   @Test(timeout=500)
@@ -193,7 +250,6 @@ public class TestRMAdminCLI {
     when(admin.checkForDecommissioningNodes(any(
         CheckForDecommissioningNodesRequest.class))).thenReturn(response);
     assertEquals(0, rmAdminCLI.run(args));
-//    verify(admin).refreshNodes(any(RefreshNodesRequest.class));
     verify(admin).refreshNodes(
         RefreshNodesRequest.newInstance(DecommissionType.GRACEFUL));
 
@@ -259,6 +315,8 @@ public class TestRMAdminCLI {
     assertEquals(0, rmAdminCLIWithHAEnabled.run(args));
     verify(haadmin).transitionToActive(
         any(HAServiceProtocol.StateChangeRequestInfo.class));
+    // HAAdmin#isOtherTargetNodeActive should check state of non-target node.
+    verify(haadmin, times(1)).getServiceStatus();
   }
 
   @Test(timeout = 500)
@@ -330,12 +388,17 @@ public class TestRMAdminCLI {
       assertTrue(dataOut
           .toString()
           .contains(
-              "yarn rmadmin [-refreshQueues] [-refreshNodes [-g [timeout in seconds]]] [-refreshSuper" +
-              "UserGroupsConfiguration] [-refreshUserToGroupsMappings] " +
-              "[-refreshAdminAcls] [-refreshServiceAcl] [-getGroup" +
-              " [username]] [-addToClusterNodeLabels <\"label1(exclusive=true),label2(exclusive=false),label3\">]" +
-              " [-removeFromClusterNodeLabels <label1,label2,label3>] [-replaceLabelsOnNode " +
-              "<\"node1[:port]=label1,label2 node2[:port]=label1\">] [-directlyAccessNodeLabelStore]] " +
+              "yarn rmadmin [-refreshQueues] [-refreshNodes [-g [timeout in " +
+              "seconds]]] [-refreshNodesResources] [-refreshSuperUserGroups" +
+              "Configuration] [-refreshUserToGroupsMappings] " +
+              "[-refreshAdminAcls] [-refreshServiceAcl] [-getGroup " +
+              "[username]] [-addToClusterNodeLabels " +
+              "<\"label1(exclusive=true),label2(exclusive=false),label3\">] " +
+              "[-removeFromClusterNodeLabels <label1,label2,label3>] " +
+              "[-replaceLabelsOnNode " +
+              "<\"node1[:port]=label1,label2 node2[:port]=label1\">] " +
+              "[-directlyAccessNodeLabelStore]] [-updateNodeResource " +
+              "[NodeID] [MemSize] [vCores] ([OvercommitTimeout]) " +
               "[-help [cmd]]"));
       assertTrue(dataOut
           .toString()
@@ -346,6 +409,11 @@ public class TestRMAdminCLI {
           .toString()
           .contains(
               "-refreshNodes [-g [timeout in seconds]]: Refresh the hosts information at the " +
+              "ResourceManager."));
+      assertTrue(dataOut
+          .toString()
+          .contains(
+              "-refreshNodesResources: Refresh resources of NodeManagers at the " +
               "ResourceManager."));
       assertTrue(dataOut.toString().contains(
           "-refreshUserToGroupsMappings: Refresh user-to-groups mappings"));
@@ -374,6 +442,8 @@ public class TestRMAdminCLI {
           "Usage: yarn rmadmin [-refreshQueues]", dataErr, 0);
       testError(new String[] { "-help", "-refreshNodes" },
           "Usage: yarn rmadmin [-refreshNodes [-g [timeout in seconds]]]", dataErr, 0);
+      testError(new String[] { "-help", "-refreshNodesResources" },
+          "Usage: yarn rmadmin [-refreshNodesResources]", dataErr, 0);
       testError(new String[] { "-help", "-refreshUserToGroupsMappings" },
           "Usage: yarn rmadmin [-refreshUserToGroupsMappings]", dataErr, 0);
       testError(
@@ -410,13 +480,15 @@ public class TestRMAdminCLI {
       assertEquals(0, rmAdminCLIWithHAEnabled.run(args));
       oldOutPrintStream.println(dataOut);
       String expectedHelpMsg = 
-          "yarn rmadmin [-refreshQueues] [-refreshNodes [-g [timeout in seconds]]] [-refreshSuper"
-              + "UserGroupsConfiguration] [-refreshUserToGroupsMappings] "
+          "yarn rmadmin [-refreshQueues] [-refreshNodes [-g [timeout in seconds]]] "
+              + "[-refreshNodesResources] [-refreshSuperUserGroupsConfiguration] "
+              + "[-refreshUserToGroupsMappings] "
               + "[-refreshAdminAcls] [-refreshServiceAcl] [-getGroup"
               + " [username]] [-addToClusterNodeLabels <\"label1(exclusive=true),"
                   + "label2(exclusive=false),label3\">]"
               + " [-removeFromClusterNodeLabels <label1,label2,label3>] [-replaceLabelsOnNode "
               + "<\"node1[:port]=label1,label2 node2[:port]=label1\">] [-directlyAccessNodeLabelStore]] "
+              + "[-updateNodeResource [NodeID] [MemSize] [vCores] ([OvercommitTimeout]) "
               + "[-transitionToActive [--forceactive] <serviceId>] "
               + "[-transitionToStandby <serviceId>] "
               + "[-getServiceState <serviceId>] [-checkHealth <serviceId>] [-help [cmd]]";

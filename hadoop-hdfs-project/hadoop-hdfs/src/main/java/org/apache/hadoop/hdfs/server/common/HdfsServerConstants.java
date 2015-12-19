@@ -25,6 +25,7 @@ import java.util.regex.Pattern;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.hdfs.DFSUtil;
+import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.server.datanode.DataNodeLayoutVersion;
 import org.apache.hadoop.hdfs.server.namenode.FSDirectory;
@@ -42,28 +43,14 @@ import org.apache.hadoop.util.StringUtils;
 @InterfaceAudience.Private
 public interface HdfsServerConstants {
   int MIN_BLOCKS_FOR_WRITE = 1;
+
   /**
-   * For a HDFS client to write to a file, a lease is granted; During the lease
-   * period, no other client can write to the file. The writing client can
-   * periodically renew the lease. When the file is closed, the lease is
-   * revoked. The lease duration is bound by this soft limit and a
-   * {@link HdfsServerConstants#LEASE_HARDLIMIT_PERIOD hard limit}. Until the
-   * soft limit expires, the writer has sole write access to the file. If the
-   * soft limit expires and the client fails to close the file or renew the
-   * lease, another client can preempt the lease.
+   * Please see {@link HdfsConstants#LEASE_SOFTLIMIT_PERIOD} and
+   * {@link HdfsConstants#LEASE_HARDLIMIT_PERIOD} for more information.
    */
-  long LEASE_SOFTLIMIT_PERIOD = 60 * 1000;
-  /**
-   * For a HDFS client to write to a file, a lease is granted; During the lease
-   * period, no other client can write to the file. The writing client can
-   * periodically renew the lease. When the file is closed, the lease is
-   * revoked. The lease duration is bound by a
-   * {@link HdfsServerConstants#LEASE_SOFTLIMIT_PERIOD soft limit} and this hard
-   * limit. If after the hard limit expires and the client has failed to renew
-   * the lease, HDFS assumes that the client has quit and will automatically
-   * close the file on behalf of the writer, and recover the lease.
-   */
-  long LEASE_HARDLIMIT_PERIOD = 60 * LEASE_SOFTLIMIT_PERIOD;
+  long LEASE_SOFTLIMIT_PERIOD = HdfsConstants.LEASE_SOFTLIMIT_PERIOD;
+  long LEASE_HARDLIMIT_PERIOD = HdfsConstants.LEASE_HARDLIMIT_PERIOD;
+
   long LEASE_RECOVER_PERIOD = 10 * 1000; // in ms
   // We need to limit the length and depth of a path in the filesystem.
   // HADOOP-438
@@ -99,15 +86,6 @@ public interface HdfsServerConstants {
   };
   byte[] DOT_SNAPSHOT_DIR_BYTES
               = DFSUtil.string2Bytes(HdfsConstants.DOT_SNAPSHOT_DIR);
-  String HOT_STORAGE_POLICY_NAME = "HOT";
-  String WARM_STORAGE_POLICY_NAME = "WARM";
-  String COLD_STORAGE_POLICY_NAME = "COLD";
-  byte MEMORY_STORAGE_POLICY_ID = 15;
-  byte ALLSSD_STORAGE_POLICY_ID = 12;
-  byte ONESSD_STORAGE_POLICY_ID = 10;
-  byte HOT_STORAGE_POLICY_ID = 7;
-  byte WARM_STORAGE_POLICY_ID = 5;
-  byte COLD_STORAGE_POLICY_ID = 2;
 
   /**
    * Type of the node
@@ -289,12 +267,6 @@ public interface HdfsServerConstants {
     }
   }
 
-  // Timeouts for communicating with DataNode for streaming writes/reads
-  int READ_TIMEOUT = 60 * 1000;
-  int READ_TIMEOUT_EXTENSION = 5 * 1000;
-  int WRITE_TIMEOUT = 8 * 60 * 1000;
-  int WRITE_TIMEOUT_EXTENSION = 5 * 1000; //for write pipeline
-
   /**
    * Defines the NameNode role.
    */
@@ -327,6 +299,8 @@ public interface HdfsServerConstants {
     /** Temporary replica: created for replication and relocation only. */
     TEMPORARY(4);
 
+    private static final ReplicaState[] cachedValues = ReplicaState.values();
+
     private final int value;
 
     ReplicaState(int v) {
@@ -338,12 +312,12 @@ public interface HdfsServerConstants {
     }
 
     public static ReplicaState getState(int v) {
-      return ReplicaState.values()[v];
+      return cachedValues[v];
     }
 
     /** Read from in */
     public static ReplicaState read(DataInput in) throws IOException {
-      return values()[in.readByte()];
+      return cachedValues[in.readByte()];
     }
 
     /** Write to out */
@@ -396,4 +370,9 @@ public interface HdfsServerConstants {
       "raw.hdfs.crypto.file.encryption.info";
   String SECURITY_XATTR_UNREADABLE_BY_SUPERUSER =
       "security.hdfs.unreadable.by.superuser";
+  String XATTR_ERASURECODING_POLICY =
+      "raw.hdfs.erasurecoding.policy";
+
+  long BLOCK_GROUP_INDEX_MASK = 15;
+  byte MAX_BLOCKS_IN_GROUP = 16;
 }

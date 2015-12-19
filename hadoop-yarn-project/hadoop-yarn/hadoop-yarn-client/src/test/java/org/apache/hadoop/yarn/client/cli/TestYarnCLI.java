@@ -26,12 +26,14 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.io.PrintWriter;
+import java.io.UnsupportedEncodingException;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -40,9 +42,11 @@ import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 import org.apache.commons.cli.Options;
 import org.apache.commons.lang.time.DateFormatUtils;
+import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptReport;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
@@ -54,18 +58,27 @@ import org.apache.hadoop.yarn.api.records.ContainerState;
 import org.apache.hadoop.yarn.api.records.FinalApplicationStatus;
 import org.apache.hadoop.yarn.api.records.LogAggregationStatus;
 import org.apache.hadoop.yarn.api.records.NodeId;
+import org.apache.hadoop.yarn.api.records.NodeLabel;
 import org.apache.hadoop.yarn.api.records.NodeReport;
 import org.apache.hadoop.yarn.api.records.NodeState;
 import org.apache.hadoop.yarn.api.records.Priority;
 import org.apache.hadoop.yarn.api.records.QueueInfo;
 import org.apache.hadoop.yarn.api.records.QueueState;
 import org.apache.hadoop.yarn.api.records.Resource;
+import org.apache.hadoop.yarn.api.records.ResourceUtilization;
+import org.apache.hadoop.yarn.api.records.SignalContainerCommand;
 import org.apache.hadoop.yarn.api.records.YarnApplicationAttemptState;
 import org.apache.hadoop.yarn.api.records.YarnApplicationState;
 import org.apache.hadoop.yarn.client.api.YarnClient;
+import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.exceptions.ApplicationAttemptNotFoundException;
 import org.apache.hadoop.yarn.exceptions.ApplicationNotFoundException;
 import org.apache.hadoop.yarn.exceptions.ContainerNotFoundException;
+import org.apache.hadoop.yarn.server.MiniYARNCluster;
+import org.apache.hadoop.yarn.server.resourcemanager.reservation.ReservationSystemTestUtil;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceScheduler;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityScheduler;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacitySchedulerConfiguration;
 import org.apache.hadoop.yarn.util.Records;
 import org.junit.Assert;
 import org.junit.Before;
@@ -81,6 +94,8 @@ public class TestYarnCLI {
   private PrintStream sysOut;
   ByteArrayOutputStream sysErrStream;
   private PrintStream sysErr;
+  private static final Pattern SPACES_PATTERN =
+      Pattern.compile("\\s+|\\n+|\\t+");
 
   @Before
   public void setup() {
@@ -98,14 +113,15 @@ public class TestYarnCLI {
       ApplicationId applicationId = ApplicationId.newInstance(1234, 5);
       ApplicationResourceUsageReport usageReport = i == 0 ? null :
           ApplicationResourceUsageReport.newInstance(
-              2, 0, null, null, null, 123456, 4567);
+              2, 0, null, null, null, 123456, 4567, 0, 0);
       ApplicationReport newApplicationReport = ApplicationReport.newInstance(
           applicationId, ApplicationAttemptId.newInstance(applicationId, 1),
           "user", "queue", "appname", "host", 124, null,
           YarnApplicationState.FINISHED, "diagnostics", "url", 0, 0,
           FinalApplicationStatus.SUCCEEDED, usageReport, "N/A", 0.53789f, "YARN",
-          null);
+          null, null, false, Priority.newInstance(0), "high-mem", "high-mem");
       newApplicationReport.setLogAggregationStatus(LogAggregationStatus.SUCCEEDED);
+      newApplicationReport.setPriority(Priority.newInstance(0));
       when(client.getApplicationReport(any(ApplicationId.class))).thenReturn(
           newApplicationReport);
       int result = cli.run(new String[] { "application", "-status", applicationId.toString() });
@@ -119,6 +135,7 @@ public class TestYarnCLI {
       pw.println("\tApplication-Type : YARN");
       pw.println("\tUser : user");
       pw.println("\tQueue : queue");
+      pw.println("\tApplication Priority : 0");
       pw.println("\tStart-Time : 0");
       pw.println("\tFinish-Time : 0");
       pw.println("\tProgress : 53.79%");
@@ -131,6 +148,9 @@ public class TestYarnCLI {
           (i == 0 ? "N/A" : "123456 MB-seconds, 4567 vcore-seconds"));
       pw.println("\tLog Aggregation Status : SUCCEEDED");
       pw.println("\tDiagnostics : diagnostics");
+      pw.println("\tUnmanaged Application : false");
+      pw.println("\tApplication Node Label Expression : high-mem");
+      pw.println("\tAM container Node Label Expression : high-mem");
       pw.close();
       String appReportStr = baos.toString("UTF-8");
       Assert.assertEquals(appReportStr, sysOutStream.toString());
@@ -779,7 +799,7 @@ public class TestYarnCLI {
     Assert.assertTrue(result == 0);
     verify(spyCli).printUsage(any(String.class), any(Options.class));
     Assert.assertEquals(createContainerCLIHelpMessage(),
-        sysOutStream.toString());
+        normalize(sysOutStream.toString()));
 
     sysOutStream.reset();
     ApplicationId applicationId = ApplicationId.newInstance(1234, 5);
@@ -789,7 +809,7 @@ public class TestYarnCLI {
         new String[] {"container", "-list", appAttemptId.toString(), "args" });
     verify(spyCli).printUsage(any(String.class), any(Options.class));
     Assert.assertEquals(createContainerCLIHelpMessage(),
-        sysOutStream.toString());
+        normalize(sysOutStream.toString()));
 
     sysOutStream.reset();
     ContainerId containerId = ContainerId.newContainerId(appAttemptId, 7);
@@ -797,7 +817,7 @@ public class TestYarnCLI {
         new String[] { "container", "-status", containerId.toString(), "args" });
     verify(spyCli).printUsage(any(String.class), any(Options.class));
     Assert.assertEquals(createContainerCLIHelpMessage(),
-        sysOutStream.toString());
+        normalize(sysOutStream.toString()));
   }
 
   @Test (timeout = 5000)
@@ -1166,6 +1186,8 @@ public class TestYarnCLI {
     pw.println("\tCPU-Used : 0 vcores");
     pw.println("\tCPU-Capacity : 0 vcores");
     pw.println("\tNode-Labels : a,b,c,x,y,z");
+    pw.println("\tResource Utilization by Node : PMem:2048 MB, VMem:4096 MB, VCores:8.0");
+    pw.println("\tResource Utilization by Containers : PMem:1024 MB, VMem:2048 MB, VCores:4.0");
     pw.close();
     String nodeStatusStr = baos.toString("UTF-8");
     verify(sysOut, times(1)).println(isA(String.class));
@@ -1200,6 +1222,44 @@ public class TestYarnCLI {
     pw.println("\tCPU-Used : 0 vcores");
     pw.println("\tCPU-Capacity : 0 vcores");
     pw.println("\tNode-Labels : ");
+    pw.println("\tResource Utilization by Node : PMem:2048 MB, VMem:4096 MB, VCores:8.0");
+    pw.println("\tResource Utilization by Containers : PMem:1024 MB, VMem:2048 MB, VCores:4.0");
+    pw.close();
+    String nodeStatusStr = baos.toString("UTF-8");
+    verify(sysOut, times(1)).println(isA(String.class));
+    verify(sysOut).println(nodeStatusStr);
+  }
+
+  @Test
+  public void testNodeStatusWithEmptyResourceUtilization() throws Exception {
+    NodeId nodeId = NodeId.newInstance("host0", 0);
+    NodeCLI cli = new NodeCLI();
+    when(client.getNodeReports()).thenReturn(
+                    getNodeReports(3, NodeState.RUNNING, false, true));
+    cli.setClient(client);
+    cli.setSysOutPrintStream(sysOut);
+    cli.setSysErrPrintStream(sysErr);
+    int result = cli.run(new String[] { "-status", nodeId.toString() });
+    assertEquals(0, result);
+    verify(client).getNodeReports();
+    ByteArrayOutputStream baos = new ByteArrayOutputStream();
+    PrintWriter pw = new PrintWriter(baos);
+    pw.println("Node Report : ");
+    pw.println("\tNode-Id : host0:0");
+    pw.println("\tRack : rack1");
+    pw.println("\tNode-State : RUNNING");
+    pw.println("\tNode-Http-Address : host1:8888");
+    pw.println("\tLast-Health-Update : "
+      + DateFormatUtils.format(new Date(0), "E dd/MMM/yy hh:mm:ss:SSzz"));
+    pw.println("\tHealth-Report : ");
+    pw.println("\tContainers : 0");
+    pw.println("\tMemory-Used : 0MB");
+    pw.println("\tMemory-Capacity : 0MB");
+    pw.println("\tCPU-Used : 0 vcores");
+    pw.println("\tCPU-Capacity : 0 vcores");
+    pw.println("\tNode-Labels : a,b,c,x,y,z");
+    pw.println("\tResource Utilization by Node : ");
+    pw.println("\tResource Utilization by Containers : ");
     pw.close();
     String nodeStatusStr = baos.toString("UTF-8");
     verify(sysOut, times(1)).println(isA(String.class));
@@ -1250,8 +1310,8 @@ public class TestYarnCLI {
     sysOutStream.reset();
     result = cli.run(new String[] { "container", "-status" });
     Assert.assertEquals(result, -1);
-    Assert.assertEquals(String.format("Missing argument for options%n%1s",
-        createContainerCLIHelpMessage()), sysOutStream.toString());
+    Assert.assertEquals(String.format("Missing argument for options %1s",
+        createContainerCLIHelpMessage()), normalize(sysOutStream.toString()));
 
     sysOutStream.reset();
     NodeCLI nodeCLI = new NodeCLI();
@@ -1271,7 +1331,7 @@ public class TestYarnCLI {
     nodeLabels.add("GPU");
     nodeLabels.add("JDK_7");
     QueueInfo queueInfo = QueueInfo.newInstance("queueA", 0.4f, 0.8f, 0.5f,
-        null, null, QueueState.RUNNING, nodeLabels, "GPU", null);
+        null, null, QueueState.RUNNING, nodeLabels, "GPU", null, false);
     when(client.getQueueInfo(any(String.class))).thenReturn(queueInfo);
     int result = cli.run(new String[] { "-status", "queueA" });
     assertEquals(0, result);
@@ -1286,16 +1346,103 @@ public class TestYarnCLI {
     pw.println("\tMaximum Capacity : " + "80.0%");
     pw.println("\tDefault Node Label expression : " + "GPU");
     pw.println("\tAccessible Node Labels : " + "JDK_7,GPU");
+    pw.println("\tPreemption : " + "enabled");
     pw.close();
     String queueInfoStr = baos.toString("UTF-8");
     Assert.assertEquals(queueInfoStr, sysOutStream.toString());
+  }
+
+  @Test
+  public void testGetQueueInfoPreemptionEnabled() throws Exception {
+    CapacitySchedulerConfiguration conf = new CapacitySchedulerConfiguration();
+    ReservationSystemTestUtil.setupQueueConfiguration(conf);
+    conf.setClass(YarnConfiguration.RM_SCHEDULER, CapacityScheduler.class,
+        ResourceScheduler.class);
+    conf.setBoolean(YarnConfiguration.RM_SCHEDULER_ENABLE_MONITORS, true);
+    conf.set(YarnConfiguration.RM_SCHEDULER_MONITOR_POLICIES,
+        "org.apache.hadoop.yarn.server.resourcemanager.monitor.capacity."
+        + "ProportionalCapacityPreemptionPolicy");
+    conf.setBoolean(YarnConfiguration.RM_SCHEDULER_ENABLE_MONITORS, true);
+    MiniYARNCluster cluster =
+        new MiniYARNCluster("testReservationAPIs", 2, 1, 1);
+
+    YarnClient yarnClient = null;
+    try {
+      cluster.init(conf);
+      cluster.start();
+      final Configuration yarnConf = cluster.getConfig();
+      yarnClient = YarnClient.createYarnClient();
+      yarnClient.init(yarnConf);
+      yarnClient.start();
+
+      QueueCLI cli = new QueueCLI();
+      cli.setClient(yarnClient);
+      cli.setSysOutPrintStream(sysOut);
+      cli.setSysErrPrintStream(sysErr);
+      sysOutStream.reset();
+      int result = cli.run(new String[] { "-status", "a1" });
+      assertEquals(0, result);
+      Assert.assertTrue(sysOutStream.toString()
+          .contains("Preemption : enabled"));
+    } finally {
+      // clean-up
+      if (yarnClient != null) {
+        yarnClient.stop();
+      }
+      cluster.stop();
+      cluster.close();
+    }
+  }
+
+  @Test
+  public void testGetQueueInfoPreemptionDisabled() throws Exception {
+    CapacitySchedulerConfiguration conf = new CapacitySchedulerConfiguration();
+    ReservationSystemTestUtil.setupQueueConfiguration(conf);
+    conf.setClass(YarnConfiguration.RM_SCHEDULER, CapacityScheduler.class,
+        ResourceScheduler.class);
+    conf.setBoolean(YarnConfiguration.RM_SCHEDULER_ENABLE_MONITORS, true);
+    conf.set(YarnConfiguration.RM_SCHEDULER_MONITOR_POLICIES,
+        "org.apache.hadoop.yarn.server.resourcemanager.monitor.capacity."
+        + "ProportionalCapacityPreemptionPolicy");
+    conf.setBoolean(YarnConfiguration.RM_SCHEDULER_ENABLE_MONITORS, true);
+    conf.setBoolean(
+        "yarn.scheduler.capacity.root.a.a1.disable_preemption", true);
+    MiniYARNCluster cluster =
+        new MiniYARNCluster("testReservationAPIs", 2, 1, 1);
+
+    YarnClient yarnClient = null;
+    try {
+      cluster.init(conf);
+      cluster.start();
+      final Configuration yarnConf = cluster.getConfig();
+      yarnClient = YarnClient.createYarnClient();
+      yarnClient.init(yarnConf);
+      yarnClient.start();
+
+      QueueCLI cli = new QueueCLI();
+      cli.setClient(yarnClient);
+      cli.setSysOutPrintStream(sysOut);
+      cli.setSysErrPrintStream(sysErr);
+      sysOutStream.reset();
+      int result = cli.run(new String[] { "-status", "a1" });
+      assertEquals(0, result);
+      Assert.assertTrue(sysOutStream.toString()
+          .contains("Preemption : disabled"));
+    } finally {
+      // clean-up
+      if (yarnClient != null) {
+        yarnClient.stop();
+      }
+      cluster.stop();
+      cluster.close();
+    }
   }
   
   @Test
   public void testGetQueueInfoWithEmptyNodeLabel() throws Exception {
     QueueCLI cli = createAndGetQueueCLI();
     QueueInfo queueInfo = QueueInfo.newInstance("queueA", 0.4f, 0.8f, 0.5f,
-        null, null, QueueState.RUNNING, null, null, null);
+        null, null, QueueState.RUNNING, null, null, null, true);
     when(client.getQueueInfo(any(String.class))).thenReturn(queueInfo);
     int result = cli.run(new String[] { "-status", "queueA" });
     assertEquals(0, result);
@@ -1308,8 +1455,10 @@ public class TestYarnCLI {
     pw.println("\tCapacity : " + "40.0%");
     pw.println("\tCurrent Capacity : " + "50.0%");
     pw.println("\tMaximum Capacity : " + "80.0%");
-    pw.println("\tDefault Node Label expression : ");
+    pw.println("\tDefault Node Label expression : "
+        + NodeLabel.DEFAULT_NODE_LABEL_PARTITION);
     pw.println("\tAccessible Node Labels : ");
+    pw.println("\tPreemption : " + "disabled");
     pw.close();
     String queueInfoStr = baos.toString("UTF-8");
     Assert.assertEquals(queueInfoStr, sysOutStream.toString());
@@ -1406,6 +1555,43 @@ public class TestYarnCLI {
     Assert.assertNotSame("should return non-zero exit code.", 0, exitCode);
   }
 
+  @Test(timeout = 60000)
+  public void testUpdateApplicationPriority() throws Exception {
+    ApplicationCLI cli = createAndGetAppCLI();
+    ApplicationId applicationId = ApplicationId.newInstance(1234, 6);
+
+    ApplicationReport appReport =
+        ApplicationReport.newInstance(applicationId,
+            ApplicationAttemptId.newInstance(applicationId, 1), "user",
+            "queue", "appname", "host", 124, null,
+            YarnApplicationState.RUNNING, "diagnostics", "url", 0, 0,
+            FinalApplicationStatus.UNDEFINED, null, "N/A", 0.53789f, "YARN",
+            null);
+    when(client.getApplicationReport(any(ApplicationId.class))).thenReturn(
+        appReport);
+
+    int result =
+        cli.run(new String[] { "application", "-appId",
+            applicationId.toString(),
+        "-updatePriority", "1" });
+    Assert.assertEquals(result, 0);
+    verify(client).updateApplicationPriority(any(ApplicationId.class),
+        any(Priority.class));
+
+  }
+
+  @Test
+  public void testFailApplicationAttempt() throws Exception {
+    ApplicationCLI cli = createAndGetAppCLI();
+    int exitCode =
+        cli.run(new String[] { "applicationattempt", "-fail",
+            "appattempt_1444199730803_0003_000001" });
+    Assert.assertEquals(0, exitCode);
+
+    verify(client).failApplicationAttempt(any(ApplicationAttemptId.class));
+    verifyNoMoreInteractions(client);
+  }
+
   private void verifyUsageInfo(YarnCLI cli) throws Exception {
     cli.setSysErrPrintStream(sysErr);
     cli.run(new String[] { "application" });
@@ -1413,11 +1599,16 @@ public class TestYarnCLI {
   }
   
   private List<NodeReport> getNodeReports(int noOfNodes, NodeState state) {
-    return getNodeReports(noOfNodes, state, true);
+    return getNodeReports(noOfNodes, state, true, false);
   }
 
   private List<NodeReport> getNodeReports(int noOfNodes, NodeState state,
       boolean emptyNodeLabel) {
+    return getNodeReports(noOfNodes, state, emptyNodeLabel, false);
+  }
+
+  private List<NodeReport> getNodeReports(int noOfNodes, NodeState state,
+      boolean emptyNodeLabel, boolean emptyResourceUtilization) {
     List<NodeReport> nodeReports = new ArrayList<NodeReport>();
 
     for (int i = 0; i < noOfNodes; i++) {
@@ -1431,6 +1622,14 @@ public class TestYarnCLI {
         .newInstance("host" + i, 0), state, "host" + 1 + ":8888",
           "rack1", Records.newRecord(Resource.class), Records
               .newRecord(Resource.class), 0, "", 0, nodeLabels);
+      if (!emptyResourceUtilization) {
+        ResourceUtilization containersUtilization = ResourceUtilization
+            .newInstance(1024, 2048, 4);
+        ResourceUtilization nodeUtilization = ResourceUtilization.newInstance(
+            2048, 4096, 8);
+        nodeReport.setAggregatedContainersUtilization(containersUtilization);
+        nodeReport.setNodeUtilization(nodeUtilization);
+      }
       nodeReports.add(nodeReport);
     }
     return nodeReports;
@@ -1455,6 +1654,7 @@ public class TestYarnCLI {
     ByteArrayOutputStream baos = new ByteArrayOutputStream();
     PrintWriter pw = new PrintWriter(baos);
     pw.println("usage: application");
+    pw.println(" -appId <Application ID>         Specify Application Id to be operated");
     pw.println(" -appStates <States>             Works with -list to filter applications");
     pw.println("                                 based on input comma-separated list of");
     pw.println("                                 application states. The valid application");
@@ -1477,6 +1677,9 @@ public class TestYarnCLI {
     pw.println("                                 specify which queue to move an");
     pw.println("                                 application to.");
     pw.println(" -status <Application ID>        Prints the status of the application.");
+    pw.println(" -updatePriority <Priority>      update priority of an application.");
+    pw.println("                                 ApplicationId can be passed using 'appId'");
+    pw.println("                                 option.");
     pw.close();
     String appsHelpStr = baos.toString("UTF-8");
     return appsHelpStr;
@@ -1486,6 +1689,7 @@ public class TestYarnCLI {
     ByteArrayOutputStream baos = new ByteArrayOutputStream();
     PrintWriter pw = new PrintWriter(baos);
     pw.println("usage: applicationattempt");
+    pw.println(" -fail <Application Attempt ID>     Fails application attempt.");
     pw.println(" -help                              Displays help for all commands.");
     pw.println(" -list <Application ID>             List application attempts for");
     pw.println("                                    aplication.");
@@ -1502,10 +1706,17 @@ public class TestYarnCLI {
     pw.println("usage: container");
     pw.println(" -help                            Displays help for all commands.");
     pw.println(" -list <Application Attempt ID>   List containers for application attempt.");
+    pw.println(" -signal <container ID [signal command]> Signal the container.");
+    pw.println("The available signal commands are ");
+    pw.println(java.util.Arrays.asList(SignalContainerCommand.values()));
+    pw.println("                                 Default command is OUTPUT_THREAD_DUMP.");
     pw.println(" -status <Container ID>           Prints the status of the container.");
     pw.close();
-    String appsHelpStr = baos.toString("UTF-8");
-    return appsHelpStr;
+    try {
+      return normalize(baos.toString("UTF-8"));
+    } catch (UnsupportedEncodingException infeasible) {
+      return infeasible.toString();
+    }
   }
 
   private String createNodeCLIHelpMessage() throws IOException {
@@ -1523,5 +1734,32 @@ public class TestYarnCLI {
     pw.close();
     String nodesHelpStr = baos.toString("UTF-8");
     return nodesHelpStr;
+  }
+
+  private static String normalize(String s) {
+    return SPACES_PATTERN.matcher(s).replaceAll(" "); // single space
+  }
+
+  @Test
+  public void testAppAttemptReportWhileContainerIsNotAssigned()
+      throws Exception {
+    ApplicationCLI cli = createAndGetAppCLI();
+    ApplicationId applicationId = ApplicationId.newInstance(1234, 5);
+    ApplicationAttemptId attemptId =
+        ApplicationAttemptId.newInstance(applicationId, 1);
+    ApplicationAttemptReport attemptReport =
+        ApplicationAttemptReport.newInstance(attemptId, "host", 124, "url",
+            "oUrl", "diagnostics", YarnApplicationAttemptState.SCHEDULED, null,
+            1000l, 2000l);
+    when(client.getApplicationAttemptReport(any(ApplicationAttemptId.class)))
+        .thenReturn(attemptReport);
+    int result =
+        cli.run(new String[] { "applicationattempt", "-status",
+            attemptId.toString() });
+    assertEquals(0, result);
+    result =
+        cli.run(new String[] { "applicationattempt", "-list",
+            applicationId.toString() });
+    assertEquals(0, result);
   }
 }

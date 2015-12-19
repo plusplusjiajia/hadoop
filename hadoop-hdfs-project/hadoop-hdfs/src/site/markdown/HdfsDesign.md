@@ -73,7 +73,7 @@ Applications that run on HDFS have large data sets. A typical file in HDFS is gi
 
 ### Simple Coherency Model
 
-HDFS applications need a write-once-read-many access model for files. A file once created, written, and closed need not be changed. This assumption simplifies data coherency issues and enables high throughput data access. A Map/Reduce application or a web crawler application fits perfectly with this model. There is a plan to support appending-writes to files in the future.
+HDFS applications need a write-once-read-many access model for files. A file once created, written, and closed need not be changed except for appends and truncates. Appending the content to the end of the files is supported but cannot be updated at arbitrary point. This assumption simplifies data coherency issues and enables high throughput data access. A MapReduce application or a web crawler application fits perfectly with this model.
 
 ### "Moving Computation is Cheaper than Moving Data"
 
@@ -116,11 +116,31 @@ The placement of replicas is critical to HDFS reliability and performance. Optim
 
 Large HDFS instances run on a cluster of computers that commonly spread across many racks. Communication between two nodes in different racks has to go through switches. In most cases, network bandwidth between machines in the same rack is greater than network bandwidth between machines in different racks.
 
-The NameNode determines the rack id each DataNode belongs to via the process outlined in [Hadoop Rack Awareness](../hadoop-common/ClusterSetup.html#HadoopRackAwareness). A simple but non-optimal policy is to place replicas on unique racks. This prevents losing data when an entire rack fails and allows use of bandwidth from multiple racks when reading data. This policy evenly distributes replicas in the cluster which makes it easy to balance load on component failure. However, this policy increases the cost of writes because a write needs to transfer blocks to multiple racks.
+The NameNode determines the rack id each DataNode belongs to via the process outlined in [Hadoop Rack Awareness](../hadoop-common/RackAwareness.html).
+A simple but non-optimal policy is to place replicas on unique racks. This prevents losing data when an entire rack fails and allows use of bandwidth from multiple racks when reading data. This policy evenly distributes replicas in the cluster which makes it easy to balance load on component failure. However, this policy increases the cost of writes because a write needs to transfer blocks to multiple racks.
 
 For the common case, when the replication factor is three, HDFS’s placement policy is to put one replica on one node in the local rack, another on a different node in the local rack, and the last on a different node in a different rack. This policy cuts the inter-rack write traffic which generally improves write performance. The chance of rack failure is far less than that of node failure; this policy does not impact data reliability and availability guarantees. However, it does reduce the aggregate network bandwidth used when reading data since a block is placed in only two unique racks rather than three. With this policy, the replicas of a file do not evenly distribute across the racks. One third of replicas are on one node, two thirds of replicas are on one rack, and the other third are evenly distributed across the remaining racks. This policy improves write performance without compromising data reliability or read performance.
 
+If the replication factor is greater than 3,
+the placement of the 4th and following replicas are determined randomly
+while keeping the number of replicas per rack below the upper limit
+(which is basically `(replicas - 1) / racks + 2`).
+
+Because the NameNode does not allow DataNodes to have multiple replicas of the same block,
+maximum number of replicas created is the total number of DataNodes at that time.
+
+After the support for
+[Storage Types and Storage Policies](ArchivalStorage.html) was added to HDFS,
+the NameNode takes the policy into account for replica placement
+in addition to the rack awareness described above.
+The NameNode chooses nodes based on rack awareness at first,
+then checks that the candidate node have storage required by the policy associated with the file.
+If the candidate node does not have the storage type, the NameNode looks for another node.
+If enough nodes to place replicas can not be found in the first path,
+the NameNode looks for nodes having fallback storage types in the second path.
+
 The current, default replica placement policy described here is a work in progress.
+
 
 ### Replica Selection
 
@@ -166,7 +186,7 @@ It is possible that a block of data fetched from a DataNode arrives corrupted. T
 
 The FsImage and the EditLog are central data structures of HDFS. A corruption of these files can cause the HDFS instance to be non-functional. For this reason, the NameNode can be configured to support maintaining multiple copies of the FsImage and EditLog. Any update to either the FsImage or EditLog causes each of the FsImages and EditLogs to get updated synchronously. This synchronous updating of multiple copies of the FsImage and EditLog may degrade the rate of namespace transactions per second that a NameNode can support. However, this degradation is acceptable because even though HDFS applications are very data intensive in nature, they are not metadata intensive. When a NameNode restarts, it selects the latest consistent FsImage and EditLog to use.
 
-The NameNode machine is a single point of failure for an HDFS cluster. If the NameNode machine fails, manual intervention is necessary. Currently, automatic restart and failover of the NameNode software to another machine is not supported.
+Another option to increase resilience against failures is to enable High Availability using multiple NameNodes either with a [shared storage on NFS](./HDFSHighAvailabilityWithNFS.html) or using a [distributed edit log](./HDFSHighAvailabilityWithQJM.html) (called Journal). The latter is the recommended approach.
 
 ### Snapshots
 
@@ -225,13 +245,49 @@ Space Reclamation
 
 ### File Deletes and Undeletes
 
-When a file is deleted by a user or an application, it is not immediately removed from HDFS. Instead, HDFS first renames it to a file in the trash directory(`/user/<username>/.Trash`). The file can be restored quickly as long as it remains in trash. A file remains in trash for a configurable amount of time. After the expiry of its life in trash, the NameNode deletes the file from the HDFS namespace. The deletion of a file causes the blocks associated with the file to be freed. Note that there could be an appreciable time delay between the time a file is deleted by a user and the time of the corresponding increase in free space in HDFS.
+When a file is deleted by a user or an application, it is not immediately removed from HDFS. Instead, HDFS moves it to a trash directory (each user has its own trash directory under `/user/<username>/.Trash`).
+The file can be restored quickly as long as it remains in trash. Most recent deleted files are moved to the current trash directory (`/user/<username>/.Trash/Current`), and in a configurable interval, HDFS creates checkpoints (under `/user/<username>/.Trash/<date>`) for files in current trash directory and deletes old checkpoints when they are expired.
+After the expiry of its life in trash, the NameNode deletes the file from the HDFS namespace. The deletion of a file causes the blocks associated with the file to be freed. Note that there could be an appreciable time delay between the time a file is deleted by a user and the time of the corresponding increase in free space in HDFS.
 
-A user can Undelete a file after deleting it as long as it remains in the trash directory. If a user wants to undelete a file that he/she has deleted, he/she can navigate the trash directory and retrieve the file. The trash directory contains only the latest copy of the file that was deleted. The trash directory is just like any other directory with one special feature: HDFS applies specified policies to automatically delete files from this directory. Current default trash interval is set to 0 (Deletes file without storing in trash). This value is configurable parameter stored as `fs.trash.interval` stored in core-site.xml.
+Currently, the trash feature is disabled by default (deleting files without storing in trash). User can enable this feature by setting a value greater than zero for parameter `fs.trash.interval` (in core-site.xml). This value tells the NameNode how long a checkpoint will be expired and removed from HDFS. In addition, user can configure an appropriate time to tell NameNode how often to create checkpoints in trash (the parameter stored as `fs.trash.checkpoint.interval` in core-site.xml), this value should be smaller or equal to fs.trash.interval.
 
 ### Decrease Replication Factor
 
 When the replication factor of a file is reduced, the NameNode selects excess replicas that can be deleted. The next Heartbeat transfers this information to the DataNode. The DataNode then removes the corresponding blocks and the corresponding free space appears in the cluster. Once again, there might be a time delay between the completion of the setReplication API call and the appearance of free space in the cluster.
+
+### HDFS Trash Management
+
+Following is an example which will show how the files are deleted from HDFS.
+We created 2 files (test1 & test2) under the directory delete
+
+$ hadoop fs -mkdir -p delete/test1
+$ hadoop fs -mkdir -p delete/test2
+$ hadoop fs -ls delete/
+Found 2 items
+drwxr-xr-x   - hadoop hadoop          0 2015-05-08 12:39 delete/test1
+drwxr-xr-x   - hadoop hadoop          0 2015-05-08 12:40 delete/test2
+
+We are going to remove the file test1.The comment below shows that the file has been moved to Trash directory and it will be deleted after a period of 1440 mins which is the time set up in core-site.xml  file.
+
+$ hadoop fs -rm -r delete/test1
+
+15/05/08 12:40:43 INFO fs.TrashPolicyDefault: Namenode trash configuration: Deletion interval = 1440 minutes, Emptier interval = 0 minutes.
+Moved: 'hdfs://localhost:8020/user/hadoop/delete/test1' to trash at: hdfs://localhost:8020/user/hadoop/.Trash/Current
+
+now we are going to remove the file with skipTrash option , which will not send the file to Trash.It will be completely removed from HDFS.
+
+$ hadoop fs -rm -r -skipTrash delete/test2
+Deleted delete/test2
+
+ We can see now that the Trash directory contains only file test1
+$ hadoop fs -ls .Trash/Current/user/hadoop/delete/
+Found 1 items\
+drwxr-xr-x   - hadoop hadoop          0 2015-05-08 12:39 .Trash/Current/user/hadoop/delete/test1
+
+so file test1 goes to Trash  and file test2 is deleted permanently
+
+ The below command will empty the Trash folder and all the files in .Trash folder will be deleted.
+$ hadoop fs -expunge
 
 References
 ----------

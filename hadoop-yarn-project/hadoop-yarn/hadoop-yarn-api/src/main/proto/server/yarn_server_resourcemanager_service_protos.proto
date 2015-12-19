@@ -76,6 +76,12 @@ message UpdateNodeResourceRequestProto {
 message UpdateNodeResourceResponseProto {
 }
 
+message RefreshNodesResourcesRequestProto {
+}
+
+message RefreshNodesResourcesResponseProto {
+}
+
 message AddToClusterNodeLabelsRequestProto {
   repeated NodeLabelProto nodeLabels = 1;
 }
@@ -105,6 +111,11 @@ message CheckForDecommissioningNodesRequestProto {
 }
 message CheckForDecommissioningNodesResponseProto {
   repeated NodeIdProto decommissioningNodes = 1;
+}
+
+message RefreshClusterMaxPriorityRequestProto {
+}
+message RefreshClusterMaxPriorityResponseProto {
 }
 
 message NodeIdToLabelsNameProto {

@@ -40,6 +40,7 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.BlockLocation;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.fs.ContentSummary;
+import org.apache.hadoop.fs.CreateFlag;
 import org.apache.hadoop.fs.DelegationTokenRenewer;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
@@ -88,15 +89,20 @@ import com.google.common.collect.Lists;
 
 /** A FileSystem for HDFS over the web. */
 public class WebHdfsFileSystem extends FileSystem
-    implements DelegationTokenRenewer.Renewable, TokenAspect.TokenManagementDelegator {
+    implements DelegationTokenRenewer.Renewable,
+    TokenAspect.TokenManagementDelegator {
   public static final Logger LOG = LoggerFactory
       .getLogger(WebHdfsFileSystem.class);
   /** WebHdfs version. */
   public static final int VERSION = 1;
   /** Http URI: http://namenode:port/{PATH_PREFIX}/path/to/file */
-  public static final String PATH_PREFIX = "/" + WebHdfsConstants.WEBHDFS_SCHEME + "/v" + VERSION;
+  public static final String PATH_PREFIX = "/" + WebHdfsConstants.WEBHDFS_SCHEME
+      + "/v" + VERSION;
 
-  /** Default connection factory may be overridden in tests to use smaller timeout values */
+  /**
+   * Default connection factory may be overridden in tests to use smaller
+   * timeout values
+   */
   protected URLConnectionFactory connectionFactory;
 
   @VisibleForTesting
@@ -140,7 +146,7 @@ public class WebHdfsFileSystem extends FileSystem
 
   @Override
   public synchronized void initialize(URI uri, Configuration conf
-      ) throws IOException {
+  ) throws IOException {
     super.initialize(uri, conf);
     setConf(conf);
     /** set user pattern based on configuration file */
@@ -148,8 +154,19 @@ public class WebHdfsFileSystem extends FileSystem
         HdfsClientConfigKeys.DFS_WEBHDFS_USER_PATTERN_KEY,
         HdfsClientConfigKeys.DFS_WEBHDFS_USER_PATTERN_DEFAULT));
 
-    connectionFactory = URLConnectionFactory
-        .newDefaultURLConnectionFactory(conf);
+    boolean isOAuth = conf.getBoolean(
+        HdfsClientConfigKeys.DFS_WEBHDFS_OAUTH_ENABLED_KEY,
+        HdfsClientConfigKeys.DFS_WEBHDFS_OAUTH_ENABLED_DEFAULT);
+
+    if(isOAuth) {
+      LOG.debug("Enabling OAuth2 in WebHDFS");
+      connectionFactory = URLConnectionFactory
+          .newOAuth2URLConnectionFactory(conf);
+    } else {
+      LOG.debug("Not enabling OAuth2 in WebHDFS");
+      connectionFactory = URLConnectionFactory
+          .newDefaultURLConnectionFactory(conf);
+    }
 
 
     ugi = UserGroupInformation.getCurrentUser();
@@ -221,16 +238,12 @@ public class WebHdfsFileSystem extends FileSystem
       // refetch tokens.  even if ugi has credentials, don't attempt
       // to get another token to match hdfs/rpc behavior
       if (token != null) {
-        if(LOG.isDebugEnabled()) {
-          LOG.debug("Using UGI token: {}", token);
-        }
+        LOG.debug("Using UGI token: {}", token);
         canRefreshDelegationToken = false;
       } else {
         token = getDelegationToken(null);
         if (token != null) {
-          if(LOG.isDebugEnabled()) {
-            LOG.debug("Fetched new token: {}", token);
-          }
+          LOG.debug("Fetched new token: {}", token);
         } else { // security is disabled
           canRefreshDelegationToken = false;
         }
@@ -245,9 +258,7 @@ public class WebHdfsFileSystem extends FileSystem
     boolean replaced = false;
     if (canRefreshDelegationToken) {
       Token<?> token = getDelegationToken(null);
-      if(LOG.isDebugEnabled()) {
-        LOG.debug("Replaced expired token: {}", token);
-      }
+      LOG.debug("Replaced expired token: {}", token);
       setDelegationToken(token);
       replaced = (token != null);
     }
@@ -311,7 +322,7 @@ public class WebHdfsFileSystem extends FileSystem
     String result = absolutePath.toUri().getPath();
     if (!DFSUtilClient.isValidName(result)) {
       throw new IllegalArgumentException("Invalid DFS directory name " +
-                                         result);
+          result);
     }
     workingDir = absolutePath;
   }
@@ -320,14 +331,16 @@ public class WebHdfsFileSystem extends FileSystem
     return f.isAbsolute()? f: new Path(workingDir, f);
   }
 
-  static Map<?, ?> jsonParse(final HttpURLConnection c, final boolean useErrorStream
-      ) throws IOException {
+  static Map<?, ?> jsonParse(final HttpURLConnection c,
+      final boolean useErrorStream) throws IOException {
     if (c.getContentLength() == 0) {
       return null;
     }
-    final InputStream in = useErrorStream? c.getErrorStream(): c.getInputStream();
+    final InputStream in = useErrorStream ?
+        c.getErrorStream() : c.getInputStream();
     if (in == null) {
-      throw new IOException("The " + (useErrorStream? "error": "input") + " stream is null.");
+      throw new IOException("The " + (useErrorStream? "error": "input") +
+          " stream is null.");
     }
     try {
       final String contentType = c.getContentType();
@@ -347,7 +360,8 @@ public class WebHdfsFileSystem extends FileSystem
   }
 
   private static Map<?, ?> validateResponse(final HttpOpParam.Op op,
-      final HttpURLConnection conn, boolean unwrapException) throws IOException {
+      final HttpURLConnection conn, boolean unwrapException)
+      throws IOException {
     final int code = conn.getResponseCode();
     // server is demanding an authentication we don't support
     if (code == HttpURLConnection.HTTP_UNAUTHORIZED) {
@@ -429,10 +443,8 @@ public class WebHdfsFileSystem extends FileSystem
   private URL getNamenodeURL(String path, String query) throws IOException {
     InetSocketAddress nnAddr = getCurrentNNAddr();
     final URL url = new URL(getTransportScheme(), nnAddr.getHostName(),
-          nnAddr.getPort(), path + '?' + query);
-    if (LOG.isTraceEnabled()) {
-      LOG.trace("url={}", url);
-    }
+        nnAddr.getPort(), path + '?' + query);
+    LOG.trace("url={}", url);
     return url;
   }
 
@@ -467,9 +479,7 @@ public class WebHdfsFileSystem extends FileSystem
         + Param.toSortedString("&", getAuthParameters(op))
         + Param.toSortedString("&", parameters);
     final URL url = getNamenodeURL(path, query);
-    if (LOG.isTraceEnabled()) {
-      LOG.trace("url={}", url);
-    }
+    LOG.trace("url={}", url);
     return url;
   }
 
@@ -482,7 +492,8 @@ public class WebHdfsFileSystem extends FileSystem
 
     protected final HttpOpParam.Op op;
     private final boolean redirected;
-    protected ExcludeDatanodesParam excludeDatanodes = new ExcludeDatanodesParam("");
+    protected ExcludeDatanodesParam excludeDatanodes =
+        new ExcludeDatanodesParam("");
 
     private boolean checkRetry;
 
@@ -519,7 +530,8 @@ public class WebHdfsFileSystem extends FileSystem
      *
      * Create/Append:
      * Step 1) Submit a Http request with neither auto-redirect nor data.
-     * Step 2) Submit another Http request with the URL from the Location header with data.
+     * Step 2) Submit another Http request with the URL from the Location header
+     * with data.
      *
      * The reason of having two-step create/append is for preventing clients to
      * send out the data before the redirect. This issue is addressed by the
@@ -578,26 +590,25 @@ public class WebHdfsFileSystem extends FileSystem
       conn.setRequestMethod(op.getType().toString());
       conn.setInstanceFollowRedirects(false);
       switch (op.getType()) {
-        // if not sending a message body for a POST or PUT operation, need
-        // to ensure the server/proxy knows this
-        case POST:
-        case PUT: {
-          conn.setDoOutput(true);
-          if (!doOutput) {
-            // explicitly setting content-length to 0 won't do spnego!!
-            // opening and closing the stream will send "Content-Length: 0"
-            conn.getOutputStream().close();
-          } else {
-            conn.setRequestProperty("Content-Type",
-                MediaType.APPLICATION_OCTET_STREAM);
-            conn.setChunkedStreamingMode(32 << 10); //32kB-chunk
-          }
-          break;
+      // if not sending a message body for a POST or PUT operation, need
+      // to ensure the server/proxy knows this
+      case POST:
+      case PUT: {
+        conn.setDoOutput(true);
+        if (!doOutput) {
+          // explicitly setting content-length to 0 won't do spnego!!
+          // opening and closing the stream will send "Content-Length: 0"
+          conn.getOutputStream().close();
+        } else {
+          conn.setRequestProperty("Content-Type",
+              MediaType.APPLICATION_OCTET_STREAM);
+          conn.setChunkedStreamingMode(32 << 10); //32kB-chunk
         }
-        default: {
-          conn.setDoOutput(doOutput);
-          break;
-        }
+        break;
+      }
+      default:
+        conn.setDoOutput(doOutput);
+        break;
       }
       conn.connect();
       return conn;
@@ -647,21 +658,22 @@ public class WebHdfsFileSystem extends FileSystem
     }
 
     private void shouldRetry(final IOException ioe, final int retry
-        ) throws IOException {
+    ) throws IOException {
       InetSocketAddress nnAddr = getCurrentNNAddr();
       if (checkRetry) {
         try {
           final RetryPolicy.RetryAction a = retryPolicy.shouldRetry(
               ioe, retry, 0, true);
 
-          boolean isRetry = a.action == RetryPolicy.RetryAction.RetryDecision.RETRY;
+          boolean isRetry =
+              a.action == RetryPolicy.RetryAction.RetryDecision.RETRY;
           boolean isFailoverAndRetry =
               a.action == RetryPolicy.RetryAction.RetryDecision.FAILOVER_AND_RETRY;
 
           if (isRetry || isFailoverAndRetry) {
             LOG.info("Retrying connect to namenode: {}. Already tried {}"
-                + " time(s); retry policy is {}, delay {}ms.", nnAddr, retry,
-                retryPolicy, a.delayMillis);
+                    + " time(s); retry policy is {}, delay {}ms.",
+                nnAddr, retry, retryPolicy, a.delayMillis);
 
             if (isFailoverAndRetry) {
               resetStateToFailOver();
@@ -757,9 +769,7 @@ public class WebHdfsFileSystem extends FileSystem
       } catch (Exception e) { // catch json parser errors
         final IOException ioe =
             new IOException("Response decoding failure: "+e.toString(), e);
-        if (LOG.isDebugEnabled()) {
-          LOG.debug("Response decoding failure: {}", e.toString(), e);
-        }
+        LOG.debug("Response decoding failure.", e);
         throw ioe;
       } finally {
         conn.disconnect();
@@ -786,7 +796,8 @@ public class WebHdfsFileSystem extends FileSystem
   /**
    * Handle create/append output streams
    */
-  class FsPathOutputStreamRunner extends AbstractFsPathRunner<FSDataOutputStream> {
+  class FsPathOutputStreamRunner
+      extends AbstractFsPathRunner<FSDataOutputStream> {
     private final int bufferSize;
 
     FsPathOutputStreamRunner(Op op, Path fspath, int bufferSize,
@@ -837,7 +848,8 @@ public class WebHdfsFileSystem extends FileSystem
       return url;
     }
 
-    protected URLRunner(final HttpOpParam.Op op, final URL url, boolean redirected) {
+    protected URLRunner(final HttpOpParam.Op op, final URL url,
+        boolean redirected) {
       super(op, redirected);
       this.url = url;
     }
@@ -911,7 +923,7 @@ public class WebHdfsFileSystem extends FileSystem
    * Create a symlink pointing to the destination path.
    */
   public void createSymlink(Path destination, Path f, boolean createParent
-      ) throws IOException {
+  ) throws IOException {
     statistics.incrementWriteOps(1);
     final HttpOpParam.Op op = PutOpParam.Op.CREATESYMLINK;
     new FsPathRunner(op, f,
@@ -963,7 +975,7 @@ public class WebHdfsFileSystem extends FileSystem
         new XAttrEncodingParam(XAttrCodec.HEX)) {
       @Override
       byte[] decodeResponse(Map<?, ?> json) throws IOException {
-        return JsonUtilClient.getXAttr(json, name);
+        return JsonUtilClient.getXAttr(json);
       }
     }.run();
   }
@@ -1020,7 +1032,7 @@ public class WebHdfsFileSystem extends FileSystem
 
   @Override
   public void setOwner(final Path p, final String owner, final String group
-      ) throws IOException {
+  ) throws IOException {
     if (owner == null && group == null) {
       throw new IOException("owner == null && group == null");
     }
@@ -1034,7 +1046,7 @@ public class WebHdfsFileSystem extends FileSystem
 
   @Override
   public void setPermission(final Path p, final FsPermission permission
-      ) throws IOException {
+  ) throws IOException {
     statistics.incrementWriteOps(1);
     final HttpOpParam.Op op = PutOpParam.Op.SETPERMISSION;
     new FsPathRunner(op, p,new PermissionParam(permission)).run();
@@ -1078,19 +1090,30 @@ public class WebHdfsFileSystem extends FileSystem
     new FsPathRunner(op, p, new AclPermissionParam(aclSpec)).run();
   }
 
+  public void allowSnapshot(final Path p) throws IOException {
+    statistics.incrementWriteOps(1);
+    final HttpOpParam.Op op = PutOpParam.Op.ALLOWSNAPSHOT;
+    new FsPathRunner(op, p).run();
+  }
+
   @Override
   public Path createSnapshot(final Path path, final String snapshotName)
       throws IOException {
     statistics.incrementWriteOps(1);
     final HttpOpParam.Op op = PutOpParam.Op.CREATESNAPSHOT;
-    Path spath = new FsPathResponseRunner<Path>(op, path,
+    return new FsPathResponseRunner<Path>(op, path,
         new SnapshotNameParam(snapshotName)) {
       @Override
       Path decodeResponse(Map<?,?> json) {
         return new Path((String) json.get(Path.class.getSimpleName()));
       }
     }.run();
-    return spath;
+  }
+
+  public void disallowSnapshot(final Path p) throws IOException {
+    statistics.incrementWriteOps(1);
+    final HttpOpParam.Op op = PutOpParam.Op.DISALLOWSNAPSHOT;
+    new FsPathRunner(op, p).run();
   }
 
   @Override
@@ -1112,7 +1135,7 @@ public class WebHdfsFileSystem extends FileSystem
 
   @Override
   public boolean setReplication(final Path p, final short replication
-     ) throws IOException {
+  ) throws IOException {
     statistics.incrementWriteOps(1);
     final HttpOpParam.Op op = PutOpParam.Op.SETREPLICATION;
     return new FsPathBooleanRunner(op, p,
@@ -1122,7 +1145,7 @@ public class WebHdfsFileSystem extends FileSystem
 
   @Override
   public void setTimes(final Path p, final long mtime, final long atime
-      ) throws IOException {
+  ) throws IOException {
     statistics.incrementWriteOps(1);
     final HttpOpParam.Op op = PutOpParam.Op.SETTIMES;
     new FsPathRunner(op, p,
@@ -1167,6 +1190,24 @@ public class WebHdfsFileSystem extends FileSystem
   }
 
   @Override
+  public FSDataOutputStream createNonRecursive(final Path f,
+      final FsPermission permission, final EnumSet<CreateFlag> flag,
+      final int bufferSize, final short replication, final long blockSize,
+      final Progressable progress) throws IOException {
+    statistics.incrementWriteOps(1);
+
+    final HttpOpParam.Op op = PutOpParam.Op.CREATE;
+    return new FsPathOutputStreamRunner(op, f, bufferSize,
+        new PermissionParam(applyUMask(permission)),
+        new CreateFlagParam(flag),
+        new CreateParentParam(false),
+        new BufferSizeParam(bufferSize),
+        new ReplicationParam(replication),
+        new BlockSizeParam(blockSize)
+    ).run();
+  }
+
+  @Override
   public FSDataOutputStream append(final Path f, final int bufferSize,
       final Progressable progress) throws IOException {
     statistics.incrementWriteOps(1);
@@ -1195,7 +1236,7 @@ public class WebHdfsFileSystem extends FileSystem
 
   @Override
   public FSDataInputStream open(final Path f, final int buffersize
-      ) throws IOException {
+  ) throws IOException {
     statistics.incrementReadOps(1);
     final HttpOpParam.Op op = GetOpParam.Op.OPEN;
     // use a runner so the open can recover from an invalid token
@@ -1212,9 +1253,7 @@ public class WebHdfsFileSystem extends FileSystem
         cancelDelegationToken(delegationToken);
       }
     } catch (IOException ioe) {
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("Token cancel failed: ", ioe);
-      }
+      LOG.debug("Token cancel failed: ", ioe);
     } finally {
       super.close();
     }
@@ -1295,7 +1334,7 @@ public class WebHdfsFileSystem extends FileSystem
     /** Remove offset parameter before returning the resolved url. */
     @Override
     protected URL getResolvedUrl(final HttpURLConnection connection
-        ) throws MalformedURLException {
+    ) throws MalformedURLException {
       return removeOffsetParam(connection.getURL());
     }
   }
@@ -1308,16 +1347,19 @@ public class WebHdfsFileSystem extends FileSystem
     return new FsPathResponseRunner<FileStatus[]>(op, f) {
       @Override
       FileStatus[] decodeResponse(Map<?,?> json) {
-        final Map<?, ?> rootmap = (Map<?, ?>)json.get(FileStatus.class.getSimpleName() + "es");
+        final Map<?, ?> rootmap =
+            (Map<?, ?>)json.get(FileStatus.class.getSimpleName() + "es");
         final List<?> array = JsonUtilClient.getList(rootmap,
-                                                     FileStatus.class.getSimpleName());
+            FileStatus.class.getSimpleName());
 
         //convert FileStatus
+        assert array != null;
         final FileStatus[] statuses = new FileStatus[array.size()];
         int i = 0;
         for (Object object : array) {
           final Map<?, ?> m = (Map<?, ?>) object;
-          statuses[i++] = makeQualified(JsonUtilClient.toFileStatus(m, false), f);
+          statuses[i++] = makeQualified(JsonUtilClient.toFileStatus(m, false),
+              f);
         }
         return statuses;
       }
@@ -1331,12 +1373,12 @@ public class WebHdfsFileSystem extends FileSystem
     Token<DelegationTokenIdentifier> token =
         new FsPathResponseRunner<Token<DelegationTokenIdentifier>>(
             op, null, new RenewerParam(renewer)) {
-      @Override
-      Token<DelegationTokenIdentifier> decodeResponse(Map<?,?> json)
-          throws IOException {
-        return JsonUtilClient.toDelegationToken(json);
-      }
-    }.run();
+          @Override
+          Token<DelegationTokenIdentifier> decodeResponse(Map<?,?> json)
+              throws IOException {
+            return JsonUtilClient.toDelegationToken(json);
+          }
+        }.run();
     if (token != null) {
       token.setService(tokenServiceName);
     } else {
@@ -1362,7 +1404,7 @@ public class WebHdfsFileSystem extends FileSystem
 
   @Override
   public synchronized long renewDelegationToken(final Token<?> token
-      ) throws IOException {
+  ) throws IOException {
     final HttpOpParam.Op op = PutOpParam.Op.RENEWDELEGATIONTOKEN;
     return new FsPathResponseRunner<Long>(op, null,
         new TokenArgumentParam(token.encodeToUrlString())) {
@@ -1375,7 +1417,7 @@ public class WebHdfsFileSystem extends FileSystem
 
   @Override
   public synchronized void cancelDelegationToken(final Token<?> token
-      ) throws IOException {
+  ) throws IOException {
     final HttpOpParam.Op op = PutOpParam.Op.CANCELDELEGATIONTOKEN;
     new FsPathRunner(op, null,
         new TokenArgumentParam(token.encodeToUrlString())
@@ -1428,7 +1470,7 @@ public class WebHdfsFileSystem extends FileSystem
 
   @Override
   public MD5MD5CRC32FileChecksum getFileChecksum(final Path p
-      ) throws IOException {
+  ) throws IOException {
     statistics.incrementReadOps(1);
 
     final HttpOpParam.Op op = GetOpParam.Op.GETFILECHECKSUM;
@@ -1446,11 +1488,11 @@ public class WebHdfsFileSystem extends FileSystem
    * an HA cluster with its logical name, the resolver further resolves the
    * logical name(i.e., the authority in the URL) into real namenode addresses.
    */
-  private InetSocketAddress[] resolveNNAddr() throws IOException {
+  private InetSocketAddress[] resolveNNAddr() {
     Configuration conf = getConf();
     final String scheme = uri.getScheme();
 
-    ArrayList<InetSocketAddress> ret = new ArrayList<InetSocketAddress>();
+    ArrayList<InetSocketAddress> ret = new ArrayList<>();
 
     if (!HAUtilClient.isLogicalUri(conf, uri)) {
       InetSocketAddress addr = NetUtils.createSocketAddr(uri.getAuthority(),

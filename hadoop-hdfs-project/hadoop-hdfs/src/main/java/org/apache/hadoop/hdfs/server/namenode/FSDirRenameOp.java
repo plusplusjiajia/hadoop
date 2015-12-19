@@ -312,7 +312,8 @@ class FSDirRenameOp {
     unprotectedRenameTo(fsd, src, dst, srcIIP, dstIIP, timestamp,
         collectedBlocks, options);
     if (!collectedBlocks.getToDeleteList().isEmpty()) {
-      fsd.getFSNamesystem().removeBlocksAndUpdateSafemodeTotal(collectedBlocks);
+      fsd.getFSNamesystem().getBlockManager()
+          .removeBlocksAndUpdateSafemodeTotal(collectedBlocks);
     }
   }
 
@@ -498,6 +499,12 @@ class FSDirRenameOp {
       NameNode.stateChangeLog.warn("DIR* FSDirectory.unprotectedRenameTo: "
           + error);
       throw new IOException(error);
+    }
+
+    if (FSDirectory.isExactReservedName(src)
+        || FSDirectory.isExactReservedName(dst)) {
+      error = "Cannot rename to or from /.reserved";
+      throw new InvalidPathException(error);
     }
   }
 
@@ -729,8 +736,8 @@ class FSDirRenameOp {
       Preconditions.checkState(oldDstChild != null);
       List<INode> removedINodes = new ChunkedArrayList<>();
       List<Long> removedUCFiles = new ChunkedArrayList<>();
-      INode.ReclaimContext context = new INode.ReclaimContext(bsps,
-          collectedBlocks, removedINodes, removedUCFiles);
+      INode.ReclaimContext context = new INode.ReclaimContext(
+          bsps, collectedBlocks, removedINodes, removedUCFiles);
       final boolean filesDeleted;
       if (!oldDstChild.isInLatestSnapshot(dstIIP.getLatestSnapshotId())) {
         oldDstChild.destroyAndCollectBlocks(context);
@@ -740,6 +747,9 @@ class FSDirRenameOp {
             dstIIP.getLatestSnapshotId());
         filesDeleted = context.quotaDelta().getNsDelta() >= 0;
       }
+      fsd.updateReplicationFactor(context.collectedBlocks()
+                                      .toUpdateReplicationInfo());
+
       fsd.getFSNamesystem().removeLeasesAndINodes(
           removedUCFiles, removedINodes, false);
       return filesDeleted;

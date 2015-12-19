@@ -21,13 +21,13 @@ import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.FS_DEFAULT_NAME
 import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.NET_TOPOLOGY_NODE_SWITCH_MAPPING_IMPL_KEY;
 import static org.apache.hadoop.fs.CommonConfigurationKeys.IPC_CLIENT_CONNECT_MAX_RETRIES_ON_SASL_DEFAULT;
 import static org.apache.hadoop.fs.CommonConfigurationKeys.IPC_CLIENT_CONNECT_MAX_RETRIES_ON_SASL_KEY;
+import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_DATA_TRANSFER_PROTECTION_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_BLOCKREPORT_INITIAL_DELAY_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_ADDRESS_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_DATA_DIR_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_HOST_NAME_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_HTTP_ADDRESS_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_IPC_ADDRESS_KEY;
-import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATA_TRANSFER_PROTECTION_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_HA_LOGROLL_PERIOD_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_HA_NAMENODES_KEY_PREFIX;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_HA_NAMENODE_ID_KEY;
@@ -37,9 +37,11 @@ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_CHECKPOINT_DIR_K
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_INTERVAL_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_HTTPS_ADDRESS_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_HTTP_ADDRESS_KEY;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_LIFELINE_RPC_ADDRESS_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_NAME_DIR_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_RPC_ADDRESS_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_SAFEMODE_EXTENSION_KEY;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_SERVICE_RPC_ADDRESS_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_SHARED_EDITS_DIR_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMESERVICES;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMESERVICE_ID;
@@ -50,18 +52,17 @@ import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.io.PrintWriter;
-import java.io.RandomAccessFile;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.net.URISyntaxException;
-import java.nio.channels.FileChannel;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
-import java.util.Random;
 import java.util.Set;
+import java.util.concurrent.TimeoutException;
 
+import com.google.common.base.Supplier;
 import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.Multimap;
 import org.apache.commons.logging.Log;
@@ -86,6 +87,7 @@ import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants.DatanodeReportType;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockManagerTestUtil;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor;
+import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeManager;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.StartupOption;
 import org.apache.hadoop.hdfs.server.common.Storage;
 import org.apache.hadoop.hdfs.server.common.Util;
@@ -93,6 +95,9 @@ import org.apache.hadoop.hdfs.server.datanode.DataNode;
 import org.apache.hadoop.hdfs.server.datanode.DataNodeTestUtils;
 import org.apache.hadoop.hdfs.server.datanode.DataStorage;
 import org.apache.hadoop.hdfs.server.datanode.DatanodeUtil;
+import org.apache.hadoop.hdfs.server.datanode.FsDatasetTestUtils;
+import org.apache.hadoop.hdfs.server.datanode.FsDatasetTestUtils.MaterializedReplica;
+import org.apache.hadoop.hdfs.server.datanode.ReplicaNotFoundException;
 import org.apache.hadoop.hdfs.server.datanode.SecureDataNodeStarter;
 import org.apache.hadoop.hdfs.server.datanode.SecureDataNodeStarter.SecureResources;
 import org.apache.hadoop.hdfs.server.datanode.SimulatedFSDataset;
@@ -114,7 +119,9 @@ import org.apache.hadoop.net.StaticMapping;
 import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.authorize.ProxyUsers;
+import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.util.ExitUtil;
+import org.apache.hadoop.util.ShutdownHookManager;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.util.ToolRunner;
 
@@ -185,6 +192,8 @@ public class MiniDFSCluster {
     
     public Builder(Configuration conf) {
       this.conf = conf;
+      this.storagesPerDatanode =
+          FsDatasetTestUtils.Factory.getFactory(conf).getDefaultNumOfDataDirs();
     }
     
     /**
@@ -884,6 +893,41 @@ public class MiniDFSCluster {
           format, operation, clusterId, nnCounter);
       nnCounter += nameservice.getNNs().size();
     }
+
+    for (NameNodeInfo nn : namenodes.values()) {
+      Configuration nnConf = nn.conf;
+      for (NameNodeInfo nnInfo : namenodes.values()) {
+        if (nn.equals(nnInfo)) {
+          continue;
+        }
+       copyKeys(conf, nnConf, nnInfo.nameserviceId, nnInfo.nnId);
+      }
+    }
+  }
+
+  private static void copyKeys(Configuration srcConf, Configuration destConf,
+      String nameserviceId, String nnId) {
+    String key = DFSUtil.addKeySuffixes(DFS_NAMENODE_RPC_ADDRESS_KEY,
+      nameserviceId, nnId);
+    destConf.set(key, srcConf.get(key));
+
+    copyKey(srcConf, destConf, nameserviceId, nnId,
+        DFS_NAMENODE_HTTP_ADDRESS_KEY);
+    copyKey(srcConf, destConf, nameserviceId, nnId,
+        DFS_NAMENODE_HTTPS_ADDRESS_KEY);
+    copyKey(srcConf, destConf, nameserviceId, nnId,
+        DFS_NAMENODE_LIFELINE_RPC_ADDRESS_KEY);
+    copyKey(srcConf, destConf, nameserviceId, nnId,
+        DFS_NAMENODE_SERVICE_RPC_ADDRESS_KEY);
+  }
+
+  private static void copyKey(Configuration srcConf, Configuration destConf,
+      String nameserviceId, String nnId, String baseKey) {
+    String key = DFSUtil.addKeySuffixes(baseKey, nameserviceId, nnId);
+    String val = srcConf.get(key);
+    if (val != null) {
+      destConf.set(key, srcConf.get(key));
+    }
   }
 
   /**
@@ -966,16 +1010,13 @@ public class MiniDFSCluster {
     // create all the namenodes in the namespace
     nnIndex = nnCounter;
     for (NNConf nn : nameservice.getNNs()) {
-      initNameNodeConf(conf, nsId, nsCounter, nn.getNnId(), manageNameDfsDirs,
+      Configuration hdfsConf = new Configuration(conf);
+      initNameNodeConf(hdfsConf, nsId, nsCounter, nn.getNnId(), manageNameDfsDirs,
           enableManagedDfsDirsRedundancy, nnIndex++);
-      NameNodeInfo info = createNameNode(conf, false, operation,
+      createNameNode(hdfsConf, false, operation,
           clusterId, nsId, nn.getNnId());
-
       // Record the last namenode uri
-      if (info != null && info.conf != null) {
-        lastDefaultFileSystem =
-            info.conf.get(FS_DEFAULT_NAME_KEY);
-      }
+      lastDefaultFileSystem = hdfsConf.get(FS_DEFAULT_NAME_KEY);
     }
     if (!federation && lastDefaultFileSystem != null) {
       // Set the default file system to the actual bind address of NN.
@@ -1192,50 +1233,39 @@ public class MiniDFSCluster {
     return args;
   }
 
-  private NameNodeInfo createNameNode(Configuration conf, boolean format, StartupOption operation,
+  private void createNameNode(Configuration hdfsConf, boolean format, StartupOption operation,
       String clusterId, String nameserviceId, String nnId) throws IOException {
     // Format and clean out DataNode directories
     if (format) {
-      DFSTestUtil.formatNameNode(conf);
+      DFSTestUtil.formatNameNode(hdfsConf);
     }
     if (operation == StartupOption.UPGRADE){
       operation.setClusterId(clusterId);
     }
-    
-    // Start the NameNode after saving the default file system.
-    String originalDefaultFs = conf.get(FS_DEFAULT_NAME_KEY);
+
     String[] args = createArgs(operation);
-    NameNode nn =  NameNode.createNameNode(args, conf);
+    NameNode nn =  NameNode.createNameNode(args, hdfsConf);
     if (operation == StartupOption.RECOVER) {
-      return null;
+      return;
     }
-    
     // After the NN has started, set back the bound ports into
     // the conf
-    conf.set(DFSUtil.addKeySuffixes(DFS_NAMENODE_RPC_ADDRESS_KEY,
+    hdfsConf.set(DFSUtil.addKeySuffixes(DFS_NAMENODE_RPC_ADDRESS_KEY,
         nameserviceId, nnId), nn.getNameNodeAddressHostPortString());
     if (nn.getHttpAddress() != null) {
-      conf.set(DFSUtil.addKeySuffixes(DFS_NAMENODE_HTTP_ADDRESS_KEY,
+      hdfsConf.set(DFSUtil.addKeySuffixes(DFS_NAMENODE_HTTP_ADDRESS_KEY,
           nameserviceId, nnId), NetUtils.getHostPortString(nn.getHttpAddress()));
     }
     if (nn.getHttpsAddress() != null) {
-      conf.set(DFSUtil.addKeySuffixes(DFS_NAMENODE_HTTPS_ADDRESS_KEY,
+      hdfsConf.set(DFSUtil.addKeySuffixes(DFS_NAMENODE_HTTPS_ADDRESS_KEY,
           nameserviceId, nnId), NetUtils.getHostPortString(nn.getHttpsAddress()));
     }
-
-    DFSUtil.setGenericConf(conf, nameserviceId, nnId,
+    copyKeys(hdfsConf, conf, nameserviceId, nnId);
+    DFSUtil.setGenericConf(hdfsConf, nameserviceId, nnId,
         DFS_NAMENODE_HTTP_ADDRESS_KEY);
     NameNodeInfo info = new NameNodeInfo(nn, nameserviceId, nnId,
-        operation, new Configuration(conf));
+        operation, hdfsConf);
     namenodes.put(nameserviceId, info);
-
-    // Restore the default fs name
-    if (originalDefaultFs == null) {
-      conf.set(FS_DEFAULT_NAME_KEY, "");
-    } else {
-      conf.set(FS_DEFAULT_NAME_KEY, originalDefaultFs);
-    }
-    return info;
   }
 
   /**
@@ -1792,7 +1822,29 @@ public class MiniDFSCluster {
   }
 
   /**
-   * Gets the rpc port used by the NameNode, because the caller 
+   * Returns the corresponding FsDatasetTestUtils for a DataNode.
+   * @param dnIdx the index of DataNode.
+   * @return a FsDatasetTestUtils for the given DataNode.
+   */
+  public FsDatasetTestUtils getFsDatasetTestUtils(int dnIdx) {
+    Preconditions.checkArgument(dnIdx < dataNodes.size());
+    return FsDatasetTestUtils.Factory.getFactory(conf)
+        .newInstance(dataNodes.get(dnIdx).datanode);
+  }
+
+  /**
+   * Returns the corresponding FsDatasetTestUtils for a DataNode.
+   * @param dn a DataNode
+   * @return a FsDatasetTestUtils for the given DataNode.
+   */
+  public FsDatasetTestUtils getFsDatasetTestUtils(DataNode dn) {
+    Preconditions.checkArgument(dn != null);
+    return FsDatasetTestUtils.Factory.getFactory(conf)
+        .newInstance(dn);
+  }
+
+  /**
+   * Gets the rpc port used by the NameNode, because the caller
    * supplied port is not necessarily the actual port used.
    * Assumption: cluster has a single namenode
    */     
@@ -1863,6 +1915,7 @@ public class MiniDFSCluster {
         nameNode = null;
       }
     }
+    ShutdownHookManager.get().clearShutdownHooks();
     if (base_dir != null) {
       if (deleteDfsDir) {
         base_dir.delete();
@@ -1974,11 +2027,18 @@ public class MiniDFSCluster {
   private int corruptBlockOnDataNodesHelper(ExtendedBlock block,
       boolean deleteBlockFile) throws IOException {
     int blocksCorrupted = 0;
-    File[] blockFiles = getAllBlockFiles(block);
-    for (File f : blockFiles) {
-      if ((deleteBlockFile && corruptBlockByDeletingBlockFile(f)) ||
-          (!deleteBlockFile && corruptBlock(f))) {
+    for (DataNode dn : getDataNodes()) {
+      try {
+        MaterializedReplica replica =
+            getFsDatasetTestUtils(dn).getMaterializedReplica(block);
+        if (deleteBlockFile) {
+          replica.deleteData();
+        } else {
+          replica.corruptData();
+        }
         blocksCorrupted++;
+      } catch (ReplicaNotFoundException e) {
+        // Ignore.
       }
     }
     return blocksCorrupted;
@@ -2030,54 +2090,61 @@ public class MiniDFSCluster {
    *
    * @param i index of the datanode
    * @param blk name of the block
-   * @throws IOException on error accessing the given block or if
-   * the contents of the block (on the same datanode) differ.
-   * @return true if a replica was corrupted, false otherwise
-   * Types: delete, write bad data, truncate
+   * @throws IOException on error accessing the given block file.
    */
-  public boolean corruptReplica(int i, ExtendedBlock blk)
+  public void corruptReplica(int i, ExtendedBlock blk)
       throws IOException {
-    File blockFile = getBlockFile(i, blk);
-    return corruptBlock(blockFile);
+    getMaterializedReplica(i, blk).corruptData();
   }
 
-  /*
-   * Corrupt a block on a particular datanode
+  /**
+   * Corrupt a block on a particular datanode.
+   *
+   * @param dn the datanode
+   * @param blk name of the block
+   * @throws IOException on error accessing the given block file.
    */
-  public static boolean corruptBlock(File blockFile) throws IOException {
-    if (blockFile == null || !blockFile.exists()) {
-      return false;
-    }
-    // Corrupt replica by writing random bytes into replica
-    Random random = new Random();
-    RandomAccessFile raFile = new RandomAccessFile(blockFile, "rw");
-    FileChannel channel = raFile.getChannel();
-    String badString = "BADBAD";
-    int rand = random.nextInt((int)channel.size()/2);
-    raFile.seek(rand);
-    raFile.write(badString.getBytes());
-    raFile.close();
-    LOG.warn("Corrupting the block " + blockFile);
-    return true;
-  }
-
-  /*
-   * Corrupt a block on a particular datanode by deleting the block file
-   */
-  public static boolean corruptBlockByDeletingBlockFile(File blockFile) 
+  public void corruptReplica(DataNode dn, ExtendedBlock blk)
       throws IOException {
-    if (blockFile == null || !blockFile.exists()) {
-      return false;
-    }
-    return blockFile.delete();
+    getMaterializedReplica(dn, blk).corruptData();
   }
 
-  public boolean changeGenStampOfBlock(int dnIndex, ExtendedBlock blk,
+  /**
+   * Corrupt the metadata of a block on a datanode.
+   * @param i the index of the datanode
+   * @param blk name of the block
+   * @throws IOException on error accessing the given metadata file.
+   */
+  public void corruptMeta(int i, ExtendedBlock blk) throws IOException {
+    getMaterializedReplica(i, blk).corruptMeta();
+  }
+
+  /**
+   * Corrupt the metadata of a block by deleting it.
+   * @param i index of the datanode
+   * @param blk name of the block.
+   */
+  public void deleteMeta(int i, ExtendedBlock blk)
+      throws IOException {
+    getMaterializedReplica(i, blk).deleteMeta();
+  }
+
+  /**
+   * Corrupt the metadata of a block by truncating it to a new size.
+   * @param i index of the datanode.
+   * @param blk name of the block.
+   * @param newSize the new size of the metadata file.
+   * @throws IOException if any I/O errors.
+   */
+  public void truncateMeta(int i, ExtendedBlock blk, int newSize)
+      throws IOException {
+    getMaterializedReplica(i, blk).truncateMeta(newSize);
+  }
+
+  public void changeGenStampOfBlock(int dnIndex, ExtendedBlock blk,
       long newGenStamp) throws IOException {
-    File blockFile = getBlockFile(dnIndex, blk);
-    File metaFile = FsDatasetUtil.findMetaFile(blockFile);
-    return metaFile.renameTo(new File(DatanodeUtil.getMetaName(
-        blockFile.getAbsolutePath(), newGenStamp)));
+    getFsDatasetTestUtils(dnIndex)
+        .changeStoredGenerationStamp(blk, newGenStamp);
   }
 
   /*
@@ -2109,8 +2176,6 @@ public class MiniDFSCluster {
     int node = -1;
     for (int i = 0; i < dataNodes.size(); i++) {
       DataNode dn = dataNodes.get(i).datanode;
-      LOG.info("DN name=" + dnName + " found DN=" + dn +
-          " with name=" + dn.getDisplayName());
       if (dnName.equals(dn.getDatanodeId().getXferAddr())) {
         node = i;
         break;
@@ -2386,7 +2451,31 @@ public class MiniDFSCluster {
 
     client.close();
   }
-  
+
+  /** Wait until the given namenode gets first block reports from all the datanodes */
+  public void waitFirstBRCompleted(int nnIndex, int timeout) throws
+      IOException, TimeoutException, InterruptedException {
+    if (namenodes.size() == 0 || getNN(nnIndex) == null || getNN(nnIndex).nameNode == null) {
+      return;
+    }
+
+    final FSNamesystem ns = getNamesystem(nnIndex);
+    final DatanodeManager dm = ns.getBlockManager().getDatanodeManager();
+    GenericTestUtils.waitFor(new Supplier<Boolean>() {
+      @Override
+      public Boolean get() {
+        List<DatanodeDescriptor> nodes = dm.getDatanodeListForReport
+            (DatanodeReportType.LIVE);
+        for (DatanodeDescriptor node : nodes) {
+          if (!node.checkBlockReportReceived()) {
+            return false;
+          }
+        }
+        return true;
+      }
+    }, 100, timeout);
+  }
+
   /**
    * Wait until the cluster is active and running.
    */
@@ -2703,7 +2792,33 @@ public class MiniDFSCluster {
     return new File(getBPDir(storageDir, bpid, Storage.STORAGE_DIR_CURRENT)
         + DataStorage.STORAGE_DIR_FINALIZED );
   }
-  
+
+  /**
+   * Get materialized replica that can be corrupted later.
+   * @param i the index of DataNode.
+   * @param blk name of the block.
+   * @return a materialized replica.
+   * @throws ReplicaNotFoundException if the replica does not exist on the
+   * DataNode.
+   */
+  public MaterializedReplica getMaterializedReplica(
+      int i, ExtendedBlock blk) throws ReplicaNotFoundException {
+    return getFsDatasetTestUtils(i).getMaterializedReplica(blk);
+  }
+
+  /**
+   * Get materialized replica that can be corrupted later.
+   * @param dn the index of DataNode.
+   * @param blk name of the block.
+   * @return a materialized replica.
+   * @throws ReplicaNotFoundException if the replica does not exist on the
+   * DataNode.
+   */
+  public MaterializedReplica getMaterializedReplica(
+      DataNode dn, ExtendedBlock blk) throws ReplicaNotFoundException {
+    return getFsDatasetTestUtils(dn).getMaterializedReplica(blk);
+  }
+
   /**
    * Get file correpsonding to a block
    * @param storageDir storage directory
@@ -2827,7 +2942,7 @@ public class MiniDFSCluster {
    * 
    * @return newly started namenode
    */
-  public NameNode addNameNode(Configuration conf, int namenodePort)
+  public void addNameNode(Configuration conf, int namenodePort)
       throws IOException {
     if(!federation)
       throw new IOException("cannot add namenode to non-federated cluster");
@@ -2846,7 +2961,7 @@ public class MiniDFSCluster {
     NameNodeInfo[] infos = this.getNameNodeInfos(nameserviceId);
     int nnIndex = infos == null ? 0 : infos.length;
     initNameNodeConf(conf, nameserviceId, nameServiceIndex, nnId, true, true, nnIndex);
-    NameNodeInfo info = createNameNode(conf, true, null, null, nameserviceId, nnId);
+    createNameNode(conf, true, null, null, nameserviceId, nnId);
 
     // Refresh datanodes with the newly started namenode
     for (DataNodeProperties dn : dataNodes) {
@@ -2856,7 +2971,6 @@ public class MiniDFSCluster {
 
     // Wait for new namenode to get registrations from all the datanodes
     waitActive(nnIndex);
-    return info.nameNode;
   }
   
   protected void setupDatanodeAddress(Configuration conf, boolean setupHostsFile,

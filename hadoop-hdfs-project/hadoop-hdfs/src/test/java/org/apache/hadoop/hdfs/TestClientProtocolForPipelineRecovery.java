@@ -21,11 +21,15 @@ import java.io.IOException;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
+import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
+import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
+import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.BlockUCState;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
+import org.apache.hadoop.hdfs.server.datanode.DataNodeFaultInjector;
 import org.apache.hadoop.hdfs.server.namenode.LeaseExpiredException;
 import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocols;
 import org.apache.hadoop.hdfs.tools.DFSAdmin;
@@ -59,7 +63,8 @@ public class TestClientProtocolForPipelineRecovery {
         namenode.updateBlockForPipeline(firstBlock, "");
         Assert.fail("Can not get a new GS from a finalized block");
       } catch (IOException e) {
-        Assert.assertTrue(e.getMessage().contains("is not under Construction"));
+        Assert.assertTrue(e.getMessage().contains(
+            "not " + BlockUCState.UNDER_CONSTRUCTION));
       }
       
       // test getNewStampAndToken on a non-existent block
@@ -124,8 +129,8 @@ public class TestClientProtocolForPipelineRecovery {
   public void testPipelineRecoveryForLastBlock() throws IOException {
     DFSClientFaultInjector faultInjector
         = Mockito.mock(DFSClientFaultInjector.class);
-    DFSClientFaultInjector oldInjector = DFSClientFaultInjector.instance;
-    DFSClientFaultInjector.instance = faultInjector;
+    DFSClientFaultInjector oldInjector = DFSClientFaultInjector.get();
+    DFSClientFaultInjector.set(faultInjector);
     Configuration conf = new HdfsConfiguration();
 
     conf.setInt(HdfsClientConfigKeys.BlockWrite.LOCATEFOLLOWINGBLOCK_RETRIES_KEY, 3);
@@ -153,7 +158,67 @@ public class TestClientProtocolForPipelineRecovery {
             + " corrupt replicas.");
       }
     } finally {
-      DFSClientFaultInjector.instance = oldInjector;
+      DFSClientFaultInjector.set(oldInjector);
+      if (cluster != null) {
+        cluster.shutdown();
+      }
+    }
+  }
+
+  @Test
+  public void testPacketTransmissionDelay() throws Exception {
+    // Make the first datanode to not relay heartbeat packet.
+    DataNodeFaultInjector dnFaultInjector = new DataNodeFaultInjector() {
+      @Override
+      public boolean dropHeartbeatPacket() {
+        return true;
+      }
+    };
+    DataNodeFaultInjector oldDnInjector = DataNodeFaultInjector.get();
+    DataNodeFaultInjector.set(dnFaultInjector);
+
+    // Setting the timeout to be 3 seconds. Normally heartbeat packet
+    // would be sent every 1.5 seconds if there is no data traffic.
+    Configuration conf = new HdfsConfiguration();
+    conf.set(HdfsClientConfigKeys.DFS_CLIENT_SOCKET_TIMEOUT_KEY, "3000");
+    MiniDFSCluster cluster = null;
+
+    try {
+      int numDataNodes = 2;
+      cluster = new MiniDFSCluster.Builder(conf).numDataNodes(numDataNodes).build();
+      cluster.waitActive();
+      FileSystem fs = cluster.getFileSystem();
+
+      FSDataOutputStream out = fs.create(new Path("noheartbeat.dat"), (short)2);
+      out.write(0x31);
+      out.hflush();
+
+      DFSOutputStream dfsOut = (DFSOutputStream)out.getWrappedStream();
+
+      // original pipeline
+      DatanodeInfo[] orgNodes = dfsOut.getPipeline();
+
+      // Cause the second datanode to timeout on reading packet
+      Thread.sleep(3500);
+      out.write(0x32);
+      out.hflush();
+
+      // new pipeline
+      DatanodeInfo[] newNodes = dfsOut.getPipeline();
+      out.close();
+
+      boolean contains = false;
+      for (int i = 0; i < newNodes.length; i++) {
+        if (orgNodes[0].getXferAddr().equals(newNodes[i].getXferAddr())) {
+          throw new IOException("The first datanode should have been replaced.");
+        }
+        if (orgNodes[1].getXferAddr().equals(newNodes[i].getXferAddr())) {
+          contains = true;
+        }
+      }
+      Assert.assertTrue(contains);
+    } finally {
+      DataNodeFaultInjector.set(oldDnInjector);
       if (cluster != null) {
         cluster.shutdown();
       }
@@ -169,7 +234,7 @@ public class TestClientProtocolForPipelineRecovery {
   @Test
   public void testPipelineRecoveryOnOOB() throws Exception {
     Configuration conf = new HdfsConfiguration();
-    conf.set(DFSConfigKeys.DFS_CLIENT_DATANODE_RESTART_TIMEOUT_KEY, "15");
+    conf.set(HdfsClientConfigKeys.DFS_CLIENT_DATANODE_RESTART_TIMEOUT_KEY, "15");
     MiniDFSCluster cluster = null;
     try {
       int numDataNodes = 1;
@@ -207,7 +272,7 @@ public class TestClientProtocolForPipelineRecovery {
   @Test
   public void testPipelineRecoveryOnRestartFailure() throws Exception {
     Configuration conf = new HdfsConfiguration();
-    conf.set(DFSConfigKeys.DFS_CLIENT_DATANODE_RESTART_TIMEOUT_KEY, "5");
+    conf.set(HdfsClientConfigKeys.DFS_CLIENT_DATANODE_RESTART_TIMEOUT_KEY, "5");
     MiniDFSCluster cluster = null;
     try {
       int numDataNodes = 2;

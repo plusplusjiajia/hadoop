@@ -22,6 +22,7 @@ import static org.apache.hadoop.util.Time.monotonicNow;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -33,6 +34,7 @@ import java.util.TreeMap;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants;
 import org.apache.hadoop.util.Daemon;
@@ -68,8 +70,8 @@ public class LeaseManager {
 
   private final FSNamesystem fsnamesystem;
 
-  private long softLimit = HdfsServerConstants.LEASE_SOFTLIMIT_PERIOD;
-  private long hardLimit = HdfsServerConstants.LEASE_HARDLIMIT_PERIOD;
+  private long softLimit = HdfsConstants.LEASE_SOFTLIMIT_PERIOD;
+  private long hardLimit = HdfsConstants.LEASE_HARDLIMIT_PERIOD;
 
   //
   // Used for handling lock-leases
@@ -107,7 +109,11 @@ public class LeaseManager {
     long numUCBlocks = 0;
     for (Long id : getINodeIdWithLeases()) {
       final INodeFile cons = fsnamesystem.getFSDirectory().getInode(id).asFile();
-      Preconditions.checkState(cons.isUnderConstruction());
+      if (!cons.isUnderConstruction()) {
+        LOG.warn("The file " + cons.getFullPathName()
+            + " is not under construction but has lease.");
+        continue;
+      }
       BlockInfo[] blocks = cons.getBlocks();
       if(blocks == null) {
         continue;
@@ -115,8 +121,8 @@ public class LeaseManager {
       for(BlockInfo b : blocks) {
         if(!b.isComplete())
           numUCBlocks++;
+        }
       }
-    }
     LOG.info("Number of blocks under construction: " + numUCBlocks);
     return numUCBlocks;
   }
@@ -128,15 +134,13 @@ public class LeaseManager {
 
   /** @return the number of leases currently in the system */
   @VisibleForTesting
-  public synchronized int countLease() {return sortedLeases.size();}
+  public synchronized int countLease() {
+    return sortedLeases.size();
+  }
 
   /** @return the number of paths contained in all leases */
-  synchronized int countPath() {
-    int count = 0;
-    for (Lease lease : sortedLeases) {
-      count += lease.getFiles().size();
-    }
-    return count;
+  synchronized long countPath() {
+    return leasesById.size();
   }
 
   /**
@@ -280,7 +284,9 @@ public class LeaseManager {
       return holder.hashCode();
     }
     
-    private Collection<Long> getFiles() { return files; }
+    private Collection<Long> getFiles() {
+      return Collections.unmodifiableCollection(files);
+    }
 
     String getHolder() {
       return holder;

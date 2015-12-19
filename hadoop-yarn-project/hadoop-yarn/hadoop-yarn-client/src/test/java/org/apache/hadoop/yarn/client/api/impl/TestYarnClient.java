@@ -77,6 +77,7 @@ import org.apache.hadoop.yarn.api.protocolrecords.ReservationSubmissionRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.ReservationSubmissionResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.ReservationUpdateRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.ReservationUpdateResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.SignalContainerRequest;
 import org.apache.hadoop.yarn.api.records.ApplicationAccessType;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptReport;
@@ -97,6 +98,7 @@ import org.apache.hadoop.yarn.api.records.ReservationRequest;
 import org.apache.hadoop.yarn.api.records.ReservationRequestInterpreter;
 import org.apache.hadoop.yarn.api.records.ReservationRequests;
 import org.apache.hadoop.yarn.api.records.Resource;
+import org.apache.hadoop.yarn.api.records.SignalContainerCommand;
 import org.apache.hadoop.yarn.api.records.YarnApplicationAttemptState;
 import org.apache.hadoop.yarn.api.records.YarnApplicationState;
 import org.apache.hadoop.yarn.client.api.AHSClient;
@@ -125,6 +127,7 @@ import org.apache.log4j.LogManager;
 import org.apache.log4j.Logger;
 import org.junit.Assert;
 import org.junit.Test;
+import org.mockito.ArgumentCaptor;
 
 public class TestYarnClient {
 
@@ -895,12 +898,12 @@ public class TestYarnClient {
       rmClient.start();
 
       ApplicationId appId = createApp(rmClient, false);
-      waitTillAccepted(rmClient, appId);
+      waitTillAccepted(rmClient, appId, false);
       //managed AMs don't return AMRM token
       Assert.assertNull(rmClient.getAMRMToken(appId));
 
       appId = createApp(rmClient, true);
-      waitTillAccepted(rmClient, appId);
+      waitTillAccepted(rmClient, appId, true);
       long start = System.currentTimeMillis();
       while (rmClient.getAMRMToken(appId) == null) {
         if (System.currentTimeMillis() - start > 20 * 1000) {
@@ -921,7 +924,7 @@ public class TestYarnClient {
             rmClient.init(yarnConf);
             rmClient.start();
             ApplicationId appId = createApp(rmClient, true);
-            waitTillAccepted(rmClient, appId);
+          waitTillAccepted(rmClient, appId, true);
             long start = System.currentTimeMillis();
             while (rmClient.getAMRMToken(appId) == null) {
               if (System.currentTimeMillis() - start > 20 * 1000) {
@@ -981,7 +984,8 @@ public class TestYarnClient {
     return appId;
   }
   
-  private void waitTillAccepted(YarnClient rmClient, ApplicationId appId)
+  private void waitTillAccepted(YarnClient rmClient, ApplicationId appId,
+      boolean unmanagedApplication)
     throws Exception {
     try {
       long start = System.currentTimeMillis();
@@ -994,6 +998,7 @@ public class TestYarnClient {
         Thread.sleep(200);
         report = rmClient.getApplicationReport(appId);
       }
+      Assert.assertEquals(unmanagedApplication, report.isUnmanagedApp());
     } catch (Exception ex) {
       throw new Exception(ex);
     }
@@ -1296,5 +1301,27 @@ public class TestYarnClient {
         rm.stop();
       }
     }
+  }
+
+  @Test
+  public void testSignalContainer() throws Exception {
+    Configuration conf = new Configuration();
+    @SuppressWarnings("resource")
+    final YarnClient client = new MockYarnClient();
+    client.init(conf);
+    client.start();
+    ApplicationId applicationId = ApplicationId.newInstance(1234, 5);
+    ApplicationAttemptId appAttemptId = ApplicationAttemptId.newInstance(
+        applicationId, 1);
+    ContainerId containerId = ContainerId.newContainerId(appAttemptId, 1);
+    SignalContainerCommand command = SignalContainerCommand.OUTPUT_THREAD_DUMP;
+    client.signalContainer(containerId, command);
+    final ArgumentCaptor<SignalContainerRequest> signalReqCaptor =
+        ArgumentCaptor.forClass(SignalContainerRequest.class);
+    verify(((MockYarnClient) client).getRMClient())
+        .signalContainer(signalReqCaptor.capture());
+    SignalContainerRequest request = signalReqCaptor.getValue();
+    Assert.assertEquals(containerId, request.getContainerId());
+    Assert.assertEquals(command, request.getCommand());
   }
 }

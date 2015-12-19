@@ -19,6 +19,8 @@
 package org.apache.hadoop.security.token;
 
 import com.google.common.collect.Maps;
+import com.google.common.primitives.Bytes;
+
 import org.apache.commons.codec.binary.Base64;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -32,11 +34,12 @@ import java.io.*;
 import java.util.Arrays;
 import java.util.Map;
 import java.util.ServiceLoader;
+import java.util.UUID;
 
 /**
  * The client-side form of the token.
  */
-@InterfaceAudience.LimitedPrivate({"HDFS", "MapReduce"})
+@InterfaceAudience.Public
 @InterfaceStability.Evolving
 public class Token<T extends TokenIdentifier> implements Writable {
   public static final Log LOG = LogFactory.getLog(Token.class);
@@ -337,7 +340,12 @@ public class Token<T extends TokenIdentifier> implements Writable {
     identifierToString(buffer);
     return buffer.toString();
   }
-  
+
+  public String buildCacheKey() {
+    return UUID.nameUUIDFromBytes(
+        Bytes.concat(kind.getBytes(), identifier, password)).toString();
+  }
+
   private static ServiceLoader<TokenRenewer> renewers =
       ServiceLoader.load(TokenRenewer.class);
 

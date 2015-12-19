@@ -32,6 +32,7 @@ import javax.servlet.http.HttpServletResponse;
 
 import org.apache.hadoop.ha.HAServiceProtocol;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
+import org.apache.hadoop.hdfs.DFSUtilClient;
 import org.apache.hadoop.security.SecurityUtil;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -81,6 +82,7 @@ public class ImageServlet extends HttpServlet {
   private static final String STORAGEINFO_PARAM = "storageInfo";
   private static final String LATEST_FSIMAGE_VALUE = "latest";
   private static final String IMAGE_FILE_TYPE = "imageFile";
+  private static final String IS_BOOTSTRAP_STANDBY = "bootstrapstandby";
 
   private SortedSet<ImageUploadRequest> currentlyDownloadingCheckpoints = Collections
       .<ImageUploadRequest> synchronizedSortedSet(new TreeSet<ImageUploadRequest>());
@@ -156,8 +158,10 @@ public class ImageServlet extends HttpServlet {
               // detected by the client side as an inaccurate length header.
             }
             // send file
+            DataTransferThrottler throttler = parsedParams.isBootstrapStandby ?
+                getThrottlerForBootstrapStandby(conf) : getThrottler(conf);
             TransferFsImage.copyFileToStream(response.getOutputStream(),
-               file, fis, getThrottler(conf));
+               file, fis, throttler);
           } finally {
             IOUtils.closeStream(fis);
           }
@@ -214,8 +218,8 @@ public class ImageServlet extends HttpServlet {
    * @param conf configuration
    * @return a data transfer throttler
    */
-  public final static DataTransferThrottler getThrottler(Configuration conf) {
-    long transferBandwidth = 
+  public static DataTransferThrottler getThrottler(Configuration conf) {
+    long transferBandwidth =
       conf.getLong(DFSConfigKeys.DFS_IMAGE_TRANSFER_RATE_KEY,
                    DFSConfigKeys.DFS_IMAGE_TRANSFER_RATE_DEFAULT);
     DataTransferThrottler throttler = null;
@@ -224,7 +228,20 @@ public class ImageServlet extends HttpServlet {
     }
     return throttler;
   }
-  
+
+  private static DataTransferThrottler getThrottlerForBootstrapStandby(
+      Configuration conf) {
+    long transferBandwidth =
+        conf.getLong(
+            DFSConfigKeys.DFS_IMAGE_TRANSFER_BOOTSTRAP_STANDBY_RATE_KEY,
+            DFSConfigKeys.DFS_IMAGE_TRANSFER_BOOTSTRAP_STANDBY_RATE_DEFAULT);
+    DataTransferThrottler throttler = null;
+    if (transferBandwidth > 0) {
+      throttler = new DataTransferThrottler(transferBandwidth);
+    }
+    return throttler;
+  }
+
   @VisibleForTesting
   static boolean isValidRequestor(ServletContext context, String remoteUser,
       Configuration conf) throws IOException {
@@ -237,7 +254,7 @@ public class ImageServlet extends HttpServlet {
 
     validRequestors.add(SecurityUtil.getServerPrincipal(conf
         .get(DFSConfigKeys.DFS_NAMENODE_KERBEROS_PRINCIPAL_KEY),
-        NameNode.getAddress(conf).getHostName()));
+        DFSUtilClient.getNNAddress(conf).getHostName()));
     try {
       validRequestors.add(
           SecurityUtil.getServerPrincipal(conf
@@ -261,7 +278,7 @@ public class ImageServlet extends HttpServlet {
       for (Configuration otherNnConf : otherNnConfs) {
         validRequestors.add(SecurityUtil.getServerPrincipal(otherNnConf
                 .get(DFSConfigKeys.DFS_NAMENODE_KERBEROS_PRINCIPAL_KEY),
-            NameNode.getAddress(otherNnConf).getHostName()));
+            DFSUtilClient.getNNAddress(otherNnConf).getHostName()));
       }
     }
 
@@ -300,13 +317,14 @@ public class ImageServlet extends HttpServlet {
   }
 
   static String getParamStringForImage(NameNodeFile nnf, long txid,
-      StorageInfo remoteStorageInfo) {
+      StorageInfo remoteStorageInfo, boolean isBootstrapStandby) {
     final String imageType = nnf == null ? "" : "&" + IMAGE_FILE_TYPE + "="
         + nnf.name();
     return "getimage=1&" + TXID_PARAM + "=" + txid
       + imageType
-      + "&" + STORAGEINFO_PARAM + "=" +
-      remoteStorageInfo.toColonSeparatedString();
+      + "&" + STORAGEINFO_PARAM + "="
+      + remoteStorageInfo.toColonSeparatedString() + "&"
+      + IS_BOOTSTRAP_STANDBY + "=" + isBootstrapStandby;
   }
 
   static String getParamStringForLog(RemoteEditLog log,
@@ -324,6 +342,7 @@ public class ImageServlet extends HttpServlet {
     private long startTxId, endTxId, txId;
     private String storageInfoString;
     private boolean fetchLatest;
+    private boolean isBootstrapStandby;
 
     /**
      * @param request the object from which this servlet reads the url contents
@@ -335,7 +354,7 @@ public class ImageServlet extends HttpServlet {
                            ) throws IOException {
       @SuppressWarnings("unchecked")
       Map<String, String[]> pmap = request.getParameterMap();
-      isGetImage = isGetEdit = fetchLatest = false;
+      isGetImage = isGetEdit = fetchLatest = isBootstrapStandby = false;
 
       for (Map.Entry<String, String[]> entry : pmap.entrySet()) {
         String key = entry.getKey();
@@ -347,6 +366,10 @@ public class ImageServlet extends HttpServlet {
             String imageType = ServletUtil.getParameter(request, IMAGE_FILE_TYPE);
             nnf = imageType == null ? NameNodeFile.IMAGE : NameNodeFile
                 .valueOf(imageType);
+            String bootstrapStandby = ServletUtil.getParameter(request,
+                IS_BOOTSTRAP_STANDBY);
+            isBootstrapStandby = bootstrapStandby != null &&
+                Boolean.parseBoolean(bootstrapStandby);
           } catch (NumberFormatException nfe) {
             if (request.getParameter(TXID_PARAM).equals(LATEST_FSIMAGE_VALUE)) {
               fetchLatest = true;

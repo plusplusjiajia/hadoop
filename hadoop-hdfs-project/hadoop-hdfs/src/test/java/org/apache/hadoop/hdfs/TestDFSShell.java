@@ -39,8 +39,9 @@ import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.BlockListAsLongs;
-import org.apache.hadoop.hdfs.server.datanode.DataNode;
-import org.apache.hadoop.hdfs.server.datanode.DataNodeTestUtils;
+import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
+import org.apache.hadoop.hdfs.server.datanode.FsDatasetTestUtils.MaterializedReplica;
+import org.apache.hadoop.hdfs.server.namenode.FSDirectory;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeStorage;
 import org.apache.hadoop.hdfs.tools.DFSAdmin;
 import org.apache.hadoop.io.IOUtils;
@@ -913,6 +914,32 @@ public class TestDFSShell {
       cluster.shutdown();
     }
   }
+
+  @Test(timeout = 30000)
+  public void testTotalSizeOfAllFiles() throws Exception {
+    Configuration conf = new HdfsConfiguration();
+    MiniDFSCluster cluster = null;
+    try {
+      cluster = new MiniDFSCluster.Builder(conf).numDataNodes(1).build();
+      FileSystem fs = cluster.getFileSystem();
+      // create file under root
+      FSDataOutputStream File1 = fs.create(new Path("/File1"));
+      File1.write("hi".getBytes());
+      File1.close();
+      // create file under sub-folder
+      FSDataOutputStream File2 = fs.create(new Path("/Folder1/File2"));
+      File2.write("hi".getBytes());
+      File2.close();
+      // getUsed() should return total length of all the files in Filesystem
+      assertEquals(4, fs.getUsed());
+    } finally {
+      if (cluster != null) {
+        cluster.shutdown();
+        cluster = null;
+      }
+    }
+  }
+
   private static void runCount(String path, long dirs, long files, FsShell shell
     ) throws IOException {
     ByteArrayOutputStream bytes = new ByteArrayOutputStream();
@@ -928,9 +955,9 @@ public class TestDFSShell {
       assertEquals(dirs, in.nextLong());
       assertEquals(files, in.nextLong());
     } finally {
+      System.setOut(oldOut);
       if (in!=null) in.close();
       IOUtils.closeStream(out);
-      System.setOut(oldOut);
       System.out.println("results:\n" + results);
     }
   }
@@ -1358,6 +1385,19 @@ public class TestDFSShell {
                              e.getLocalizedMessage());
         }
         assertEquals(0, val);
+
+        // this should fail
+        args1[0] = "-cp";
+        args1[1] = "/";
+        args1[2] = "/test";
+        val = 0;
+        try {
+          val = shell.run(args1);
+        } catch (Exception e) {
+          System.err.println("Exception raised from DFSShell.run " +
+              e.getLocalizedMessage());
+        }
+        assertEquals(1, val);
       }
 
       // Verify -test -f negative case (missing file)
@@ -1468,32 +1508,31 @@ public class TestDFSShell {
     }
   }
 
-  static List<File> getBlockFiles(MiniDFSCluster cluster) throws IOException {
-    List<File> files = new ArrayList<File>();
-    List<DataNode> datanodes = cluster.getDataNodes();
+  private static List<MaterializedReplica> getMaterializedReplicas(
+      MiniDFSCluster cluster) throws IOException {
+    List<MaterializedReplica> replicas = new ArrayList<>();
     String poolId = cluster.getNamesystem().getBlockPoolId();
-    List<Map<DatanodeStorage, BlockListAsLongs>> blocks = cluster.getAllBlockReports(poolId);
+    List<Map<DatanodeStorage, BlockListAsLongs>> blocks =
+        cluster.getAllBlockReports(poolId);
     for(int i = 0; i < blocks.size(); i++) {
-      DataNode dn = datanodes.get(i);
       Map<DatanodeStorage, BlockListAsLongs> map = blocks.get(i);
       for(Map.Entry<DatanodeStorage, BlockListAsLongs> e : map.entrySet()) {
         for(Block b : e.getValue()) {
-          files.add(DataNodeTestUtils.getFile(dn, poolId, b.getBlockId()));
+          replicas.add(cluster.getMaterializedReplica(i,
+              new ExtendedBlock(poolId, b)));
         }
       }
     }
-    return files;
+    return replicas;
   }
 
-  static void corrupt(List<File> files) throws IOException {
-    for(File f : files) {
-      StringBuilder content = new StringBuilder(DFSTestUtil.readFile(f));
-      char c = content.charAt(0);
-      content.setCharAt(0, ++c);
-      PrintWriter out = new PrintWriter(f);
-      out.print(content);
-      out.flush();
-      out.close();
+  private static void corrupt(
+      List<MaterializedReplica> replicas, String content) throws IOException {
+    StringBuilder sb = new StringBuilder(content);
+    char c = content.charAt(0);
+    sb.setCharAt(0, ++c);
+    for(MaterializedReplica replica : replicas) {
+      replica.corruptData(sb.toString().getBytes("UTF8"));
     }
   }
 
@@ -1597,7 +1636,7 @@ public class TestDFSShell {
       assertEquals(localfcontent, runner.run(0, "-ignoreCrc"));
 
       // find block files to modify later
-      List<File> files = getBlockFiles(cluster);
+      List<MaterializedReplica> replicas = getMaterializedReplicas(cluster);
 
       // Shut down cluster and then corrupt the block files by overwriting a
       // portion with junk data.  We must shut down the cluster so that threads
@@ -1610,8 +1649,8 @@ public class TestDFSShell {
       dfs.close();
       cluster.shutdown();
 
-      show("files=" + files);
-      corrupt(files);
+      show("replicas=" + replicas);
+      corrupt(replicas, localfcontent);
 
       // Start the cluster again, but do not reformat, so prior files remain.
       cluster = new MiniDFSCluster.Builder(conf).numDataNodes(2).format(false)
@@ -1681,9 +1720,9 @@ public class TestDFSShell {
       assertEquals(returnvalue, shell.run(new String[]{"-lsr", root}));
       results = bytes.toString();
     } finally {
-      IOUtils.closeStream(out);
       System.setOut(oldOut);
       System.setErr(oldErr);
+      IOUtils.closeStream(out);
     }
     System.out.println("results:\n" + results);
     return results;
@@ -2386,7 +2425,63 @@ public class TestDFSShell {
     }
   }
 
+  /**
+   * Test -setrep with a replication factor that is too low.  We have to test
+   * this here because the mini-cluster used with testHDFSConf.xml uses a
+   * replication factor of 1 (for good reason).
+   */
+  @Test (timeout = 30000)
+  public void testSetrepLow() throws Exception {
+    Configuration conf = new Configuration();
 
+    conf.setInt(DFSConfigKeys.DFS_NAMENODE_REPLICATION_MIN_KEY, 2);
+
+    MiniDFSCluster.Builder builder = new MiniDFSCluster.Builder(conf);
+    MiniDFSCluster cluster = builder.numDataNodes(2).format(true).build();
+    FsShell shell = new FsShell(conf);
+
+    cluster.waitActive();
+
+    final String testdir = "/tmp/TestDFSShell-testSetrepLow";
+    final Path hdfsFile = new Path(testdir, "testFileForSetrepLow");
+    final PrintStream origOut = System.out;
+    final PrintStream origErr = System.err;
+
+    try {
+      final FileSystem fs = cluster.getFileSystem();
+
+      assertTrue("Unable to create test directory",
+          fs.mkdirs(new Path(testdir)));
+
+      fs.create(hdfsFile, true).close();
+
+      // Capture the command output so we can examine it
+      final ByteArrayOutputStream bao = new ByteArrayOutputStream();
+      final PrintStream capture = new PrintStream(bao);
+
+      System.setOut(capture);
+      System.setErr(capture);
+
+      final String[] argv = new String[] { "-setrep", "1", hdfsFile.toString() };
+
+      try {
+        assertEquals("Command did not return the expected exit code",
+            1, shell.run(argv));
+      } finally {
+        System.setOut(origOut);
+        System.setErr(origErr);
+      }
+
+      assertEquals("Error message is not the expected error message",
+          "setrep: Requested replication factor of 1 is less than "
+              + "the required minimum of 2 for /tmp/TestDFSShell-"
+              + "testSetrepLow/testFileForSetrepLow\n",
+          bao.toString());
+    } finally {
+      shell.close();
+      cluster.shutdown();
+    }
+  }
 
   // setrep for file and directory.
   @Test (timeout = 30000)
@@ -3052,5 +3147,205 @@ public class TestDFSShell {
   @Test (timeout = 30000)
   public void testNoTrashConfig() throws Exception {
     deleteFileUsingTrash(false, false);
+  }
+
+  @Test (timeout = 30000)
+  public void testListReserved() throws IOException {
+    Configuration conf = new HdfsConfiguration();
+    MiniDFSCluster cluster =
+        new MiniDFSCluster.Builder(conf).numDataNodes(2).build();
+    FileSystem fs = cluster.getFileSystem();
+    FsShell shell = new FsShell();
+    shell.setConf(conf);
+    FileStatus test = fs.getFileStatus(new Path("/.reserved"));
+    assertEquals(FSDirectory.DOT_RESERVED_STRING, test.getPath().getName());
+
+    // Listing /.reserved/ should show 2 items: raw and .inodes
+    FileStatus[] stats = fs.listStatus(new Path("/.reserved"));
+    assertEquals(2, stats.length);
+    assertEquals(FSDirectory.DOT_INODES_STRING, stats[0].getPath().getName());
+    assertEquals(conf.get(DFSConfigKeys.DFS_PERMISSIONS_SUPERUSERGROUP_KEY),
+        stats[0].getGroup());
+    assertEquals("raw", stats[1].getPath().getName());
+    assertEquals(conf.get(DFSConfigKeys.DFS_PERMISSIONS_SUPERUSERGROUP_KEY),
+        stats[1].getGroup());
+
+    // Listing / should not show /.reserved
+    stats = fs.listStatus(new Path("/"));
+    assertEquals(0, stats.length);
+
+    // runCmd prints error into System.err, thus verify from there.
+    PrintStream syserr = System.err;
+    final ByteArrayOutputStream baos = new ByteArrayOutputStream();
+    PrintStream ps = new PrintStream(baos);
+    System.setErr(ps);
+    try {
+      runCmd(shell, "-ls", "/.reserved");
+      assertEquals(0, baos.toString().length());
+
+      runCmd(shell, "-ls", "/.reserved/raw/.reserved");
+      assertTrue(baos.toString().contains("No such file or directory"));
+    } finally {
+      System.setErr(syserr);
+      cluster.shutdown();
+    }
+  }
+
+  @Test (timeout = 30000)
+  public void testMkdirReserved() throws IOException {
+    Configuration conf = new HdfsConfiguration();
+    MiniDFSCluster cluster =
+        new MiniDFSCluster.Builder(conf).numDataNodes(2).build();
+    FileSystem fs = cluster.getFileSystem();
+    try {
+      fs.mkdirs(new Path("/.reserved"));
+      fail("Can't mkdir /.reserved");
+    } catch (Exception e) {
+      // Expected, HadoopIllegalArgumentException thrown from remote
+      assertTrue(e.getMessage().contains("\".reserved\" is reserved"));
+    }
+    cluster.shutdown();
+  }
+
+  @Test (timeout = 30000)
+  public void testRmReserved() throws IOException {
+    Configuration conf = new HdfsConfiguration();
+    MiniDFSCluster cluster =
+        new MiniDFSCluster.Builder(conf).numDataNodes(2).build();
+    FileSystem fs = cluster.getFileSystem();
+    try {
+      fs.delete(new Path("/.reserved"), true);
+      fail("Can't delete /.reserved");
+    } catch (Exception e) {
+      // Expected, InvalidPathException thrown from remote
+      assertTrue(e.getMessage().contains("Invalid path name /.reserved"));
+    }
+    cluster.shutdown();
+  }
+
+  @Test //(timeout = 30000)
+  public void testCopyReserved() throws IOException {
+    Configuration conf = new HdfsConfiguration();
+    MiniDFSCluster cluster =
+        new MiniDFSCluster.Builder(conf).numDataNodes(2).build();
+    FileSystem fs = cluster.getFileSystem();
+    final File localFile = new File(TEST_ROOT_DIR, "testFileForPut");
+    localFile.createNewFile();
+    final String localfilepath =
+        new Path(localFile.getAbsolutePath()).toUri().toString();
+    try {
+      fs.copyFromLocalFile(new Path(localfilepath), new Path("/.reserved"));
+      fail("Can't copyFromLocal to /.reserved");
+    } catch (Exception e) {
+      // Expected, InvalidPathException thrown from remote
+      assertTrue(e.getMessage().contains("Invalid path name /.reserved"));
+    }
+
+    final String testdir = System.getProperty("test.build.data")
+        + "/TestDFSShell-testCopyReserved";
+    final Path hdfsTestDir = new Path(testdir);
+    writeFile(fs, new Path(testdir, "testFileForPut"));
+    final Path src = new Path(hdfsTestDir, "srcfile");
+    fs.create(src).close();
+    assertTrue(fs.exists(src));
+
+    // runCmd prints error into System.err, thus verify from there.
+    PrintStream syserr = System.err;
+    final ByteArrayOutputStream baos = new ByteArrayOutputStream();
+    PrintStream ps = new PrintStream(baos);
+    System.setErr(ps);
+    try {
+      FsShell shell = new FsShell();
+      shell.setConf(conf);
+      runCmd(shell, "-cp", src.toString(), "/.reserved");
+      assertTrue(baos.toString().contains("Invalid path name /.reserved"));
+    } finally {
+      System.setErr(syserr);
+      cluster.shutdown();
+    }
+  }
+
+  @Test (timeout = 30000)
+  public void testChmodReserved() throws IOException {
+    Configuration conf = new HdfsConfiguration();
+    MiniDFSCluster cluster =
+        new MiniDFSCluster.Builder(conf).numDataNodes(2).build();
+    FileSystem fs = cluster.getFileSystem();
+
+    // runCmd prints error into System.err, thus verify from there.
+    PrintStream syserr = System.err;
+    final ByteArrayOutputStream baos = new ByteArrayOutputStream();
+    PrintStream ps = new PrintStream(baos);
+    System.setErr(ps);
+    try {
+      FsShell shell = new FsShell();
+      shell.setConf(conf);
+      runCmd(shell, "-chmod", "777", "/.reserved");
+      assertTrue(baos.toString().contains("Invalid path name /.reserved"));
+    } finally {
+      System.setErr(syserr);
+      cluster.shutdown();
+    }
+  }
+
+  @Test (timeout = 30000)
+  public void testChownReserved() throws IOException {
+    Configuration conf = new HdfsConfiguration();
+    MiniDFSCluster cluster =
+        new MiniDFSCluster.Builder(conf).numDataNodes(2).build();
+    FileSystem fs = cluster.getFileSystem();
+
+    // runCmd prints error into System.err, thus verify from there.
+    PrintStream syserr = System.err;
+    final ByteArrayOutputStream baos = new ByteArrayOutputStream();
+    PrintStream ps = new PrintStream(baos);
+    System.setErr(ps);
+    try {
+      FsShell shell = new FsShell();
+      shell.setConf(conf);
+      runCmd(shell, "-chown", "user1", "/.reserved");
+      assertTrue(baos.toString().contains("Invalid path name /.reserved"));
+    } finally {
+      System.setErr(syserr);
+      cluster.shutdown();
+    }
+  }
+
+  @Test (timeout = 30000)
+  public void testSymLinkReserved() throws IOException {
+    Configuration conf = new HdfsConfiguration();
+    MiniDFSCluster cluster =
+        new MiniDFSCluster.Builder(conf).numDataNodes(2).build();
+    FileSystem fs = cluster.getFileSystem();
+    try {
+      fs.createSymlink(new Path("/.reserved"), new Path("/rl1"), false);
+      fail("Can't create symlink to /.reserved");
+    } catch (Exception e) {
+      // Expected, InvalidPathException thrown from remote
+      assertTrue(e.getMessage().contains("Invalid target name: /.reserved"));
+    }
+    cluster.shutdown();
+  }
+
+  @Test (timeout = 30000)
+  public void testSnapshotReserved() throws IOException {
+    Configuration conf = new HdfsConfiguration();
+    MiniDFSCluster cluster =
+        new MiniDFSCluster.Builder(conf).numDataNodes(2).build();
+    DistributedFileSystem fs = cluster.getFileSystem();
+    final Path reserved = new Path("/.reserved");
+    try {
+      fs.allowSnapshot(reserved);
+      fail("Can't allow snapshot on /.reserved");
+    } catch (FileNotFoundException e) {
+      assertTrue(e.getMessage().contains("Directory does not exist"));
+    }
+    try {
+      fs.createSnapshot(reserved, "snap");
+      fail("Can't create snapshot on /.reserved");
+    } catch (FileNotFoundException e) {
+      assertTrue(e.getMessage().contains("Directory does not exist"));
+    }
+    cluster.shutdown();
   }
 }

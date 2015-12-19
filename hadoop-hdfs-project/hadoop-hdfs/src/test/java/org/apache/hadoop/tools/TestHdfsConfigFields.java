@@ -22,6 +22,7 @@ import java.util.HashSet;
 
 import org.apache.hadoop.conf.TestConfigurationFieldsBase;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
+import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 
 /**
  * Unit test class to compare the following MR Configuration classes:
@@ -39,7 +40,8 @@ public class TestHdfsConfigFields extends TestConfigurationFieldsBase {
   @Override
   public void initializeMemberVariables() {
     xmlFilename = new String("hdfs-default.xml");
-    configurationClasses = new Class[] { DFSConfigKeys.class };
+    configurationClasses = new Class[] { HdfsClientConfigKeys.class,
+        DFSConfigKeys.class};
 
     // Set error modes
     errorIfMissingConfigProps = true;
@@ -77,8 +79,8 @@ public class TestHdfsConfigFields extends TestConfigurationFieldsBase {
     // Some properties have moved to HdfsClientConfigKeys
     xmlPropsToSkipCompare.add("dfs.client.short.circuit.replica.stale.threshold.ms");
 
-    // Ignore SpanReceiveHost properties
-    xmlPropsToSkipCompare.add("dfs.htrace.spanreceiver.classes");
-    xmlPropsToSkipCompare.add("dfs.client.htrace.spanreceiver.classes");
+    // Ignore HTrace properties
+    xmlPropsToSkipCompare.add("fs.client.htrace");
+    xmlPropsToSkipCompare.add("hadoop.htrace");
   }
 }

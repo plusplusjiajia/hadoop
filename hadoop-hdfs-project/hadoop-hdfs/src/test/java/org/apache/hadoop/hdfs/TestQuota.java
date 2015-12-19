@@ -17,21 +17,28 @@
  */
 package org.apache.hadoop.hdfs;
 
+import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.FS_DEFAULT_NAME_KEY;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.io.OutputStream;
+import java.io.PrintStream;
 import java.security.PrivilegedExceptionAction;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.ContentSummary;
+import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.hdfs.protocol.DSQuotaExceededException;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.protocol.NSQuotaExceededException;
+import org.apache.hadoop.hdfs.protocol.QuotaByStorageTypeExceededException;
 import org.apache.hadoop.hdfs.protocol.QuotaExceededException;
 import org.apache.hadoop.hdfs.server.namenode.FSImageTestUtil;
 import org.apache.hadoop.hdfs.tools.DFSAdmin;
@@ -40,6 +47,8 @@ import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.junit.Assert;
 import org.junit.Test;
+
+import com.google.common.base.Charsets;
 
 /** A class for testing quota-related commands */
 public class TestQuota {
@@ -566,7 +575,6 @@ public class TestQuota {
       c = dfs.getContentSummary(quotaDir20);
       assertEquals(c.getSpaceQuota(), 6 * fileSpace);
 
-
       // Create /nqdir0/qdir1/qdir21 and set its space quota to 2 * fileSpace
       final Path quotaDir21 = new Path("/nqdir0/qdir1/qdir21");
       assertTrue(dfs.mkdirs(quotaDir21));
@@ -773,6 +781,59 @@ public class TestQuota {
           (sizeFactorA + sizeFactorB + sizeFactorC) * fileSpace);
 
       assertEquals(20, cluster.getNamesystem().getFSDirectory().getYieldCount());
+    } finally {
+      cluster.shutdown();
+    }
+  }
+
+  /**
+   * Test quota by storage type.
+   */
+  @Test
+  public void testQuotaByStorageType() throws Exception {
+    final Configuration conf = new HdfsConfiguration();
+    // set a smaller block size so that we can test with smaller
+    // diskspace quotas
+    conf.set(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, "512");
+    // Make it relinquish locks. When run serially, the result should
+    // be identical.
+    conf.setInt(DFSConfigKeys.DFS_CONTENT_SUMMARY_LIMIT_KEY, 2);
+    final MiniDFSCluster cluster =
+        new MiniDFSCluster.Builder(conf).numDataNodes(2).build();
+    final FileSystem fs = cluster.getFileSystem();
+    assertTrue("Not a HDFS: " + fs.getUri(),
+        fs instanceof DistributedFileSystem);
+    final DistributedFileSystem dfs = (DistributedFileSystem) fs;
+
+    try {
+      int fileLen = 1024;
+      short replication = 3;
+      int fileSpace = fileLen * replication;
+
+      final Path quotaDir20 = new Path("/nqdir0/qdir1/qdir20");
+      assertTrue(dfs.mkdirs(quotaDir20));
+      dfs.setQuota(quotaDir20, HdfsConstants.QUOTA_DONT_SET, 6 * fileSpace);
+
+      // Verify DirectoryWithQuotaFeature's storage type usage
+      // is updated properly after deletion.
+      // File creation followed by deletion shouldn't change storage type
+      // usage regardless whether storage policy is set.
+      Path file = new Path(quotaDir20, "fileDir/file1");
+      DFSTestUtil.createFile(dfs, file, fileLen * 3, replication, 0);
+      dfs.delete(file, false);
+      dfs.setStoragePolicy(quotaDir20, HdfsConstants.HOT_STORAGE_POLICY_NAME);
+      dfs.setQuotaByStorageType(quotaDir20, StorageType.DEFAULT,
+          2 * fileSpace);
+      boolean hasException = false;
+      try {
+        DFSTestUtil.createFile(dfs, file, fileLen * 3, replication, 0);
+      } catch (QuotaByStorageTypeExceededException e) {
+        hasException = true;
+      }
+      assertTrue(hasException);
+      dfs.delete(file, false);
+      dfs.setQuotaByStorageType(quotaDir20, StorageType.DEFAULT,
+          6 * fileSpace);
     } finally {
       cluster.shutdown();
     }
@@ -986,4 +1047,54 @@ public class TestQuota {
       cluster.shutdown();
     }
   }
+
+  @Test
+  public void testSetSpaceQuotaWhenStorageTypeIsWrong() throws Exception {
+    Configuration conf = new HdfsConfiguration();
+    conf.set(FS_DEFAULT_NAME_KEY, "hdfs://127.0.0.1:8020");
+    DFSAdmin admin = new DFSAdmin(conf);
+    ByteArrayOutputStream err = new ByteArrayOutputStream();
+    PrintStream oldErr = System.err;
+    try {
+      System.setErr(new PrintStream(err));
+      String[] args =
+          { "-setSpaceQuota", "100", "-storageType", "COLD", "/testDir" };
+      admin.run(args);
+      String errOutput = new String(err.toByteArray(), Charsets.UTF_8);
+      assertTrue(
+          errOutput.contains(StorageType.getTypesSupportingQuota().toString()));
+    } finally {
+      System.setErr(oldErr);
+    }
+  }
+
+   /**
+   * File count on root , should return total value of files in Filesystem
+   * when one folder contains files more than "dfs.content-summary.limit".
+   */
+  @Test
+  public void testHugeFileCount() throws IOException {
+    MiniDFSCluster cluster = null;
+    Configuration conf = new Configuration();
+    conf.setInt("dfs.content-summary.limit", 4);
+    try {
+      cluster = new MiniDFSCluster.Builder(conf).numDataNodes(0).build();
+      DistributedFileSystem dfs = cluster.getFileSystem();
+      for (int i = 1; i <= 5; i++) {
+        FSDataOutputStream out =
+            dfs.create(new Path("/Folder1/" + "file" + i),(short)1);
+        out.close();
+      }
+      FSDataOutputStream out = dfs.create(new Path("/Folder2/file6"),(short)1);
+      out.close();
+      ContentSummary contentSummary = dfs.getContentSummary(new Path("/"));
+      assertEquals(6, contentSummary.getFileCount());
+    } finally {
+      if (cluster != null) {
+        cluster.shutdown();
+        cluster = null;
+      }
+    }
+  }
+
 }

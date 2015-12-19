@@ -90,9 +90,11 @@ public class TestSafeMode {
   public void tearDown() throws IOException {
     if (fs != null) {
       fs.close();
+      fs = null;
     }
     if (cluster != null) {
       cluster.shutdown();
+      cluster = null;
     }
   }
 
@@ -219,7 +221,7 @@ public class TestSafeMode {
       }
     }, 10, 10000);
 
-    final int safe = NameNodeAdapter.getSafeModeSafeBlocks(nn);
+    final long safe = NameNodeAdapter.getSafeModeSafeBlocks(nn);
     assertTrue("Expected first block report to make some blocks safe.", safe > 0);
     assertTrue("Did not expect first block report to make all blocks safe.", safe < 15);
 
@@ -552,7 +554,7 @@ public class TestSafeMode {
       if(cluster!= null) cluster.shutdown();
     }
   }
-  
+
   void checkGetBlockLocationsWorks(FileSystem fs, Path fileName) throws IOException {
     FileStatus stat = fs.getFileStatus(fileName);
     try {  
@@ -560,7 +562,7 @@ public class TestSafeMode {
     } catch (SafeModeException e) {
       assertTrue("Should have not got safemode exception", false);
     } catch (RemoteException re) {
-      assertTrue("Should have not got safemode exception", false);   
+      assertTrue("Should have not got remote exception", false);
     }    
   }
 }

@@ -21,8 +21,7 @@ package org.apache.hadoop.fs;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.util.DataChecksum;
-import org.apache.htrace.NullScope;
-import org.apache.htrace.TraceScope;
+import org.apache.htrace.core.TraceScope;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -196,8 +195,12 @@ abstract public class FSOutputSummer extends OutputStream {
     return sum.getChecksumSize();
   }
 
+  protected DataChecksum getDataChecksum() {
+    return sum;
+  }
+
   protected TraceScope createWriteTraceScope() {
-    return NullScope.INSTANCE;
+    return null;
   }
 
   /** Generate checksums for the given data chunks and output chunks & checksums
@@ -215,7 +218,9 @@ abstract public class FSOutputSummer extends OutputStream {
             getChecksumSize());
       }
     } finally {
-      scope.close();
+      if (scope != null) {
+        scope.close();
+      }
     }
   }
 

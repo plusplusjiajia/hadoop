@@ -16,6 +16,7 @@ ResourceManager REST API's.
 ===========================
 
 * [Overview](#Overview)
+* [Enabling CORS support](#Enabling_CORS_support)
 * [Cluster Information API](#Cluster_Information_API)
 * [Cluster Metrics API](#Cluster_Metrics_API)
 * [Cluster Scheduler API](#Cluster_Scheduler_API)
@@ -30,12 +31,20 @@ ResourceManager REST API's.
 * [Cluster Applications API(Submit Application)](#Cluster_Applications_APISubmit_Application)
 * [Cluster Application State API](#Cluster_Application_State_API)
 * [Cluster Application Queue API](#Cluster_Application_Queue_API)
+* [Cluster Application Priority API](#Cluster_Application_Priority_API)
 * [Cluster Delegation Tokens API](#Cluster_Delegation_Tokens_API)
 
 Overview
 --------
 
 The ResourceManager REST API's allow the user to get information about the cluster - status on the cluster, metrics on the cluster, scheduler information, information about nodes in the cluster, and information about applications on the cluster.
+
+Enabling CORS support
+---------------------
+To enable cross-origin support (CORS) for the RM only(without enabling it for the NM), please set the following configuration parameters:
+
+In core-site.xml, add org.apache.hadoop.security.HttpCrossOriginFilterInitializer to hadoop.http.filter.initializers.
+In yarn-site.xml, set yarn.resourcemanager.webapp.cross-origin.enabled to true.
 
 Cluster Information API
 -----------------------
@@ -1378,9 +1387,13 @@ Response Body:
           "allocatedVCores" : 0,
           "runningContainers" : 0,
 	  "applicationType" : "MAPREDUCE",
-	  "applicationTags" : ""
+	  "applicationTags" : "",
           "memorySeconds" : 151730,
-          "vcoreSeconds" : 103
+          "vcoreSeconds" : 103,
+          "unmanagedApplication" : "false",
+          "applicationPriority" : 0,
+          "appNodeLabelExpression" : "",
+          "amnodeLabelExpression" : ""
        },
        {
           "finishedTime" : 1326815789546,
@@ -1403,10 +1416,14 @@ Response Body:
           "allocatedVCores" : 0,
           "runningContainers" : 1,
 	  "applicationType" : "YARN",
-	  "applicationTags" : "tag1"
+	  "applicationTags" : "tag1",
           "memorySeconds" : 640064,
-          "vcoreSeconds" : 442
-       } 
+          "vcoreSeconds" : 442,
+          "unmanagedApplication" : "false",
+          "applicationPriority" : 0,
+          "appNodeLabelExpression" : "",
+          "amNodeLabelExpression" : ""
+       }
     ]
   }
 }
@@ -1455,6 +1472,10 @@ Response Body:
     <runningContainers>0</runningContainers>
     <memorySeconds>151730</memorySeconds>
     <vcoreSeconds>103</vcoreSeconds>
+    <unmanagedApplication>false</unmanagedApplication>
+    <applicationPriority>0</applicationPriority>
+    <appNodeLabelExpression></appNodeLabelExpression>
+    <amNodeLabelExpression></amNodeLabelExpression>
   </app>
   <app>
     <id>application_1326815542473_0002</id>
@@ -1480,6 +1501,10 @@ Response Body:
     <runningContainers>0</runningContainers>
     <memorySeconds>640064</memorySeconds>
     <vcoreSeconds>442</vcoreSeconds>
+    <unmanagedApplication>false</unmanagedApplication>
+    <applicationPriority>0</applicationPriority>
+    <appNodeLabelExpression></appNodeLabelExpression>
+    <amNodeLabelExpression></amNodeLabelExpression>
   </app>
 </apps>
 ```
@@ -1639,6 +1664,10 @@ Note that depending on security settings a user might not be able to see all the
 | runningContainers | int | The number of containers currently running for the application |
 | memorySeconds | long | The amount of memory the application has allocated (megabyte-seconds) |
 | vcoreSeconds | long | The amount of CPU resources the application has allocated (virtual core-seconds) |
+| unmanagedApplication | boolean | Is the application unmanaged. |
+| applicationPriority | int | priority of the submitted application |
+| appNodeLabelExpression | string | Node Label expression which is used to identify the nodes on which application's containers are expected to run by default.|
+| amNodeLabelExpression | string | Node Label expression which is used to identify the node on which application's  AM container is expected to run.|
 
 ### Response Examples
 
@@ -1678,7 +1707,11 @@ Response Body:
       "trackingUrl" : "http://host.domain.com:8088/proxy/application_1326821518301_0005/jobhistory/job/job_1326821518301_5_5",
       "queue" : "a1",
       "memorySeconds" : 151730,
-      "vcoreSeconds" : 103
+      "vcoreSeconds" : 103,
+      "unmanagedApplication" : "false",
+      "applicationPriority" : 0,
+      "appNodeLabelExpression" : "",
+      "amNodeLabelExpression" : ""
    }
 }
 ```
@@ -1720,6 +1753,10 @@ Response Body:
   <amHostHttpAddress>host.domain.com:8042</amHostHttpAddress>
   <memorySeconds>151730</memorySeconds>
   <vcoreSeconds>103</vcoreSeconds>
+  <unmanagedApplication>false</unmanagedApplication>
+  <applicationPriority>0</applicationPriority>
+  <appNodeLabelExpression></appNodeLabelExpression>
+  <amNodeLabelExpression></amNodeLabelExpression>
 </app>
 ```
 
@@ -2755,6 +2792,125 @@ Response Body:
     <appqueue>
       <queue>test</queue>
     </appqueue>
+
+Cluster Application Priority API
+-----------------------------
+
+With the application priority API, you can query the priority of a submitted app as well update priority of a running or accepted app using a PUT request specifying the target priority. To perform the PUT operation, authentication has to be setup for the RM web services. In addition, you must be authorized to update the app priority. Currently you can only update the app priority if you're using the Capacity scheduler.
+
+Please note that in order to update priority of an app, you must have an authentication filter setup for the HTTP interface. The functionality requires that a username is set in the HttpServletRequest. If no filter is setup, the response will be an "UNAUTHORIZED" response.
+
+This feature is currently in the alpha stage and may change in the future.
+
+### URI
+
+      * http://<rm http address:port>/ws/v1/cluster/apps/{appid}/priority
+
+### HTTP Operations Supported
+
+      * GET
+      * PUT
+
+### Query Parameters Supported
+
+      None
+
+### Elements of *apppriority* object
+
+When you make a request for the state of an app, the information returned has the following fields
+
+| Item | Data Type | Description |
+|:---- |:---- |:---- |
+| priority | int | The application priority |
+
+### Response Examples
+
+**JSON responses**
+
+HTTP Request
+
+      GET http://<rm http address:port>/ws/v1/cluster/apps/application_1399397633663_0003/priority
+
+Response Header:
+
+    HTTP/1.1 200 OK
+    Content-Type: application/json
+    Transfer-Encoding: chunked
+    Server: Jetty(6.1.26)
+
+Response Body:
+
+    {
+      "priority":0
+    }
+
+HTTP Request
+
+      PUT http://<rm http address:port>/ws/v1/cluster/apps/application_1399397633663_0003/priority
+
+Request Body:
+
+    {
+      "priority":8
+    }
+
+Response Header:
+
+    HTTP/1.1 200 OK
+    Content-Type: application/json
+    Transfer-Encoding: chunked
+    Server: Jetty(6.1.26)
+
+Response Body:
+
+    {
+      "priority":8
+    }
+
+**XML responses**
+
+HTTP Request
+
+      GET http://<rm http address:port>/ws/v1/cluster/apps/application_1399397633663_0003/priority
+
+Response Header:
+
+    HTTP/1.1 200 OK
+    Content-Type: application/xml
+    Content-Length: 98
+    Server: Jetty(6.1.26)
+
+Response Body:
+
+    <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    <applicationpriority>
+      <priority>0</priority>
+    </applicationpriority>
+
+HTTP Request
+
+      PUT http://<rm http address:port>/ws/v1/cluster/apps/application_1399397633663_0003/priority
+
+Request Body:
+
+    <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    <applicationpriority>
+      <priority>8</priority>
+    </applicationpriority>
+
+Response Header:
+
+    HTTP/1.1 200 OK
+    Content-Type: application/xml
+    Content-Length: 95
+    Server: Jetty(6.1.26)
+
+Response Body:
+
+    <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    <applicationpriority>
+      <priority>8</priority>
+    </applicationpriority>
 
 Cluster Delegation Tokens API
 -----------------------------

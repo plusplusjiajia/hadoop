@@ -19,6 +19,7 @@ package org.apache.hadoop.hdfs;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.io.RandomAccessFile;
@@ -54,6 +55,7 @@ import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FileSystemTestHelper;
 import org.apache.hadoop.fs.FileSystemTestWrapper;
+import org.apache.hadoop.fs.FsShell;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.RemoteIterator;
 import org.apache.hadoop.fs.permission.FsPermission;
@@ -95,8 +97,11 @@ import static org.mockito.Matchers.anyShort;
 import static org.mockito.Mockito.withSettings;
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.anyString;
+import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.FS_TRASH_INTERVAL_KEY;
 import static org.apache.hadoop.hdfs.DFSTestUtil.verifyFilesEqual;
 import static org.apache.hadoop.test.GenericTestUtils.assertExceptionContains;
+import static org.apache.hadoop.test.MetricsAsserts.assertGauge;
+import static org.apache.hadoop.test.MetricsAsserts.getMetrics;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
@@ -120,6 +125,7 @@ public class TestEncryptionZones {
   protected DistributedFileSystem fs;
   private File testRootDir;
   protected final String TEST_KEY = "test_key";
+  private static final String NS_METRICS = "FSNamesystem";
 
   protected FileSystemTestWrapper fsWrapper;
   protected FileContextTestWrapper fcWrapper;
@@ -164,6 +170,7 @@ public class TestEncryptionZones {
   public void teardown() {
     if (cluster != null) {
       cluster.shutdown();
+      cluster = null;
     }
     EncryptionFaultInjector.instance = new EncryptionFaultInjector();
   }
@@ -358,6 +365,9 @@ public class TestEncryptionZones {
     fs.setSafeMode(SafeModeAction.SAFEMODE_LEAVE);
     cluster.restartNameNode(true);
     assertNumZones(numZones);
+    assertEquals("Unexpected number of encryption zones!", numZones, cluster
+        .getNamesystem().getNumEncryptionZones());
+    assertGauge("NumEncryptionZones", numZones, getMetrics(NS_METRICS));
     assertZonePresent(null, zone1.toString());
 
     // Verify newly added ez is present after restarting the NameNode
@@ -369,6 +379,44 @@ public class TestEncryptionZones {
     cluster.restartNameNode(true);
     assertNumZones(numZones);
     assertZonePresent(null, nonpersistZone.toString());
+  }
+
+  @Test(timeout = 60000)
+  public void testBasicOperationsRootDir() throws Exception {
+    int numZones = 0;
+    final Path rootDir = new Path("/");
+    final Path zone1 = new Path(rootDir, "zone1");
+
+    /* Normal creation of an EZ on rootDir */
+    dfsAdmin.createEncryptionZone(rootDir, TEST_KEY);
+    assertNumZones(++numZones);
+    assertZonePresent(null, rootDir.toString());
+
+    /* create EZ on child of rootDir which is already an EZ should fail */
+    fsWrapper.mkdir(zone1, FsPermission.getDirDefault(), true);
+    try {
+      dfsAdmin.createEncryptionZone(zone1, TEST_KEY);
+      fail("EZ over an EZ");
+    } catch (IOException e) {
+      assertExceptionContains("already in an encryption zone", e);
+    }
+
+    // Verify rootDir ez is present after restarting the NameNode
+    // and saving/loading from fsimage.
+    fs.setSafeMode(SafeModeAction.SAFEMODE_ENTER);
+    fs.saveNamespace();
+    fs.setSafeMode(SafeModeAction.SAFEMODE_LEAVE);
+    cluster.restartNameNode(true);
+    assertNumZones(numZones);
+    assertZonePresent(null, rootDir.toString());
+
+    /* create EZ on child of rootDir which is already an EZ should fail */
+    try {
+      dfsAdmin.createEncryptionZone(zone1, TEST_KEY);
+      fail("EZ over an EZ");
+    } catch (IOException e) {
+      assertExceptionContains("already in an encryption zone", e);
+    }
   }
 
   /**
@@ -469,8 +517,13 @@ public class TestEncryptionZones {
           assertExceptionContains("Permission denied:", e);
         }
 
-        assertNull("expected null for nonexistent path",
-            userAdmin.getEncryptionZoneForPath(nonexistent));
+        try {
+          userAdmin.getEncryptionZoneForPath(nonexistent);
+          fail("FileNotFoundException should be thrown for a non-existent"
+              + " file path");
+        } catch (FileNotFoundException e) {
+          assertExceptionContains("Path not found: " + nonexistent, e);
+        }
 
         // Check operation with non-ez paths
         assertNull("expected null for non-ez path",
@@ -498,10 +551,20 @@ public class TestEncryptionZones {
         assertEquals("expected ez path", allPath.toString(),
             userAdmin.getEncryptionZoneForPath(
                 new Path(snapshottedAllPath)).getPath().toString());
-        assertNull("expected null for deleted file path",
-            userAdmin.getEncryptionZoneForPath(allPathFile));
-        assertNull("expected null for deleted directory path",
-            userAdmin.getEncryptionZoneForPath(allPath));
+        try {
+          userAdmin.getEncryptionZoneForPath(allPathFile);
+          fail("FileNotFoundException should be thrown for a non-existent"
+              + " file path");
+        } catch (FileNotFoundException e) {
+          assertExceptionContains("Path not found: " + allPathFile, e);
+        }
+        try {
+          userAdmin.getEncryptionZoneForPath(allPath);
+          fail("FileNotFoundException should be thrown for a non-existent"
+              + " file path");
+        } catch (FileNotFoundException e) {
+          assertExceptionContains("Path not found: " + allPath, e);
+        }
         return null;
       }
     });
@@ -737,7 +800,7 @@ public class TestEncryptionZones {
             version, new byte[suite.getAlgorithmBlockSize()],
             new byte[suite.getAlgorithmBlockSize()],
             "fakeKey", "fakeVersion"),
-            (byte) 0))
+            (byte) 0, null))
         .when(mcp)
         .create(anyString(), (FsPermission) anyObject(), anyString(),
             (EnumSetWritable<CreateFlag>) anyObject(), anyBoolean(),
@@ -1324,5 +1387,72 @@ public class TestEncryptionZones {
 
     assertEquals("Got unexpected ez path", "/somewhere/base/zone", dfsAdmin
         .getEncryptionZoneForPath(zoneDir).getPath().toString());
+  }
+
+  @Test(timeout = 60000)
+  public void testGetEncryptionZoneOnANonExistentZoneFile() throws Exception {
+    final Path ez = new Path("/ez");
+    fs.mkdirs(ez);
+    dfsAdmin.createEncryptionZone(ez, TEST_KEY);
+    Path zoneFile = new Path(ez, "file");
+    try {
+      fs.getEZForPath(zoneFile);
+      fail("FileNotFoundException should be thrown for a non-existent"
+          + " file path");
+    } catch (FileNotFoundException e) {
+      assertExceptionContains("Path not found: " + zoneFile, e);
+    }
+    try {
+      dfsAdmin.getEncryptionZoneForPath(zoneFile);
+      fail("FileNotFoundException should be thrown for a non-existent"
+          + " file path");
+    } catch (FileNotFoundException e) {
+      assertExceptionContains("Path not found: " + zoneFile, e);
+    }
+  }
+
+  @Test(timeout = 120000)
+  public void testEncryptionZoneWithTrash() throws Exception {
+    // Create the encryption zone1
+    final HdfsAdmin dfsAdmin =
+        new HdfsAdmin(FileSystem.getDefaultUri(conf), conf);
+    final Path zone1 = new Path("/zone1");
+    fs.mkdirs(zone1);
+    dfsAdmin.createEncryptionZone(zone1, TEST_KEY);
+
+    // Create the encrypted file in zone1
+    final Path encFile1 = new Path(zone1, "encFile1");
+    final int len = 8192;
+    DFSTestUtil.createFile(fs, encFile1, len, (short) 1, 0xFEED);
+
+    Configuration clientConf = new Configuration(conf);
+    clientConf.setLong(FS_TRASH_INTERVAL_KEY, 1);
+    FsShell shell = new FsShell(clientConf);
+
+    // Delete encrypted file from the shell with trash enabled
+    // Verify the file is moved to appropriate trash within the zone
+    verifyShellDeleteWithTrash(shell, encFile1);
+
+    // Delete encryption zone from the shell with trash enabled
+    // Verify the zone is moved to appropriate trash location in user's home dir
+    verifyShellDeleteWithTrash(shell, zone1);
+  }
+
+  private void verifyShellDeleteWithTrash(FsShell shell, Path path)
+      throws Exception{
+    try {
+      final Path trashFile =
+          new Path(shell.getCurrentTrashDir(path) + "/" + path);
+      String[] argv = new String[]{"-rm", "-r", path.toString()};
+      int res = ToolRunner.run(shell, argv);
+      assertEquals("rm failed", 0, res);
+      assertTrue("File not in trash : " + trashFile, fs.exists(trashFile));
+    } catch (IOException ioe) {
+      fail(ioe.getMessage());
+    } finally {
+      if (fs.exists(path)) {
+        fs.delete(path, true);
+      }
+    }
   }
 }

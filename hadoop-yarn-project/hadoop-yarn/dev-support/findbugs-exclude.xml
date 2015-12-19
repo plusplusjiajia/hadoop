@@ -109,6 +109,11 @@
     <Method name="handle" />
     <Bug pattern="BC_UNCONFIRMED_CAST" />
   </Match>
+  <Match>
+    <Class name="org.apache.hadoop.yarn.server.nodemanager.containermanager.launcher.ContainersLauncher" />
+    <Method name="handle" />
+    <Bug pattern="BC_UNCONFIRMED_CAST" />
+  </Match>
 
 
   <!-- Ignore intentional switch fallthroughs -->
@@ -494,5 +499,10 @@
       <Field name="timestampSeconds" />
     </Or>
     <Bug pattern="URF_UNREAD_PUBLIC_OR_PROTECTED_FIELD" />
+  </Match>
+
+  <Match>
+    <Package name="org.apache.hadoop.yarn.api.records.impl.pb" />
+    <Bug pattern="NP_BOOLEAN_RETURN_NULL" />
   </Match>
 </FindBugsFilter>

@@ -52,11 +52,6 @@ http://maven.apache.org/xsd/maven-4.0.0.xsd">
       <artifactId>hadoop-hdfs</artifactId>
       <scope>provided</scope>
     </dependency>
-    <dependency>
-      <groupId>org.apache.hadoop</groupId>
-      <artifactId>hadoop-hdfs-client</artifactId>
-      <scope>provided</scope>
-    </dependency>
     <dependency> 
       <groupId>org.apache.hadoop</groupId>
       <artifactId>hadoop-hdfs</artifactId>
@@ -112,6 +107,7 @@ http://maven.apache.org/xsd/maven-4.0.0.xsd">
               <protocCommand>${protoc.path}</protocCommand>
               <imports>
                 <param>${basedir}/../../../../../hadoop-common-project/hadoop-common/src/main/proto</param>
+                <param>${basedir}/../../../../../hadoop-hdfs-project/hadoop-hdfs-client/src/main/proto</param>
                 <param>${basedir}/../../../../../hadoop-hdfs-project/hadoop-hdfs/src/main/proto</param>
                 <param>${basedir}/src/main/proto</param>
               </imports>

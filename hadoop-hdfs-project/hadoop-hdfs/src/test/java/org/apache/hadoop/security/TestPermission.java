@@ -20,6 +20,7 @@ package org.apache.hadoop.security;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 import java.io.IOException;
 import java.util.Random;
@@ -82,24 +83,36 @@ public class TestPermission {
     Configuration conf = new Configuration();
     FsPermission.setUMask(conf, perm);
     assertEquals(18, FsPermission.getUMask(conf).toShort());
-    
-    // Test 2 - old configuration key set with decimal 
-    // umask value should be handled
-    perm = new FsPermission((short)18);
-    conf = new Configuration();
-    conf.set(FsPermission.DEPRECATED_UMASK_LABEL, "18");
-    assertEquals(18, FsPermission.getUMask(conf).toShort());
-    
-    // Test 3 - old configuration key overrides the new one
-    conf = new Configuration();
-    conf.set(FsPermission.DEPRECATED_UMASK_LABEL, "18");
-    conf.set(FsPermission.UMASK_LABEL, "000");
-    assertEquals(18, FsPermission.getUMask(conf).toShort());
-    
-    // Test 4 - new configuration key is handled
+
+    // Test 2 - new configuration key is handled
     conf = new Configuration();
     conf.set(FsPermission.UMASK_LABEL, "022");
     assertEquals(18, FsPermission.getUMask(conf).toShort());
+
+    // Test 3 - equivalent valid umask
+    conf = new Configuration();
+    conf.set(FsPermission.UMASK_LABEL, "0022");
+    assertEquals(18, FsPermission.getUMask(conf).toShort());
+
+    // Test 4 - invalid umask
+    conf = new Configuration();
+    conf.set(FsPermission.UMASK_LABEL, "1222");
+    try {
+      FsPermission.getUMask(conf);
+      fail("expect IllegalArgumentException happen");
+    } catch (IllegalArgumentException e) {
+     //pass, exception successfully trigger
+    }
+
+    // Test 5 - invalid umask
+    conf = new Configuration();
+    conf.set(FsPermission.UMASK_LABEL, "01222");
+    try {
+      FsPermission.getUMask(conf);
+      fail("expect IllegalArgumentException happen");
+    } catch (IllegalArgumentException e) {
+     //pass, exception successfully trigger
+    }
   }
 
   @Test

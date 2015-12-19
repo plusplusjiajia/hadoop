@@ -45,6 +45,7 @@ import org.apache.hadoop.hdfs.server.namenode.INode;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeStorageReport;
 import org.apache.hadoop.hdfs.server.protocol.StorageReport;
 import org.apache.hadoop.io.IOUtils;
+import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
 import org.apache.hadoop.net.NetworkTopology;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.util.Time;
@@ -174,8 +175,21 @@ public class Mover {
     }
   }
 
-  DBlock newDBlock(Block block, List<MLocation> locations) {
-    final DBlock db = new DBlock(block);
+  DBlock newDBlock(LocatedBlock lb, List<MLocation> locations,
+                   ErasureCodingPolicy ecPolicy) {
+    Block blk = lb.getBlock().getLocalBlock();
+    DBlock db;
+    if (lb.isStriped()) {
+      LocatedStripedBlock lsb = (LocatedStripedBlock) lb;
+      byte[] indices = new byte[lsb.getBlockIndices().length];
+      for (int i = 0; i < indices.length; i++) {
+        indices[i] = (byte) lsb.getBlockIndices()[i];
+      }
+      db = new DBlockStriped(blk, indices, (short) ecPolicy.getNumDataUnits(),
+          ecPolicy.getCellSize());
+    } else {
+      db = new DBlock(blk);
+    }
     for(MLocation ml : locations) {
       StorageGroup source = storages.getSource(ml);
       if (source != null) {
@@ -269,10 +283,14 @@ public class Mover {
       // wait for pending move to finish and retry the failed migration
       boolean hasFailed = Dispatcher.waitForMoveCompletion(storages.targets
           .values());
-      if (hasFailed) {
+      boolean hasSuccess = Dispatcher.checkForSuccess(storages.targets
+          .values());
+      if (hasFailed && !hasSuccess) {
         if (retryCount.get() == retryMaxAttempts) {
-          throw new IOException("Failed to move some block's after "
+          result.setRetryFailed();
+          LOG.error("Failed to move some block's after "
               + retryMaxAttempts + " retries.");
+          return result;
         } else {
           retryCount.incrementAndGet();
         }
@@ -354,9 +372,10 @@ public class Mover {
         LOG.warn("Failed to get the storage policy of file " + fullPath);
         return;
       }
-      final List<StorageType> types = policy.chooseStorageTypes(
+      List<StorageType> types = policy.chooseStorageTypes(
           status.getReplication());
 
+      final ErasureCodingPolicy ecPolicy = status.getErasureCodingPolicy();
       final LocatedBlocks locatedBlocks = status.getBlockLocations();
       final boolean lastBlkComplete = locatedBlocks.isLastBlockComplete();
       List<LocatedBlock> lbs = locatedBlocks.getLocatedBlocks();
@@ -366,10 +385,13 @@ public class Mover {
           continue;
         }
         LocatedBlock lb = lbs.get(i);
+        if (lb.isStriped()) {
+          types = policy.chooseStorageTypes((short) lb.getLocations().length);
+        }
         final StorageTypeDiff diff = new StorageTypeDiff(types,
             lb.getStorageTypes());
         if (!diff.removeOverlap(true)) {
-          if (scheduleMoves4Block(diff, lb)) {
+          if (scheduleMoves4Block(diff, lb, ecPolicy)) {
             result.updateHasRemaining(diff.existing.size() > 1
                 && diff.expected.size() > 1);
             // One block scheduled successfully, set noBlockMoved to false
@@ -381,10 +403,13 @@ public class Mover {
       }
     }
 
-    boolean scheduleMoves4Block(StorageTypeDiff diff, LocatedBlock lb) {
+    boolean scheduleMoves4Block(StorageTypeDiff diff, LocatedBlock lb,
+                                ErasureCodingPolicy ecPolicy) {
       final List<MLocation> locations = MLocation.toLocations(lb);
-      Collections.shuffle(locations);
-      final DBlock db = newDBlock(lb.getBlock().getLocalBlock(), locations);
+      if (!(lb instanceof LocatedStripedBlock)) {
+        Collections.shuffle(locations);
+      }
+      final DBlock db = newDBlock(lb, locations, ecPolicy);
 
       for (final StorageType t : diff.existing) {
         for (final MLocation ml : locations) {
@@ -567,12 +592,23 @@ public class Mover {
             IOUtils.cleanup(LOG, nnc);
             iter.remove();
           } else if (r != ExitStatus.IN_PROGRESS) {
+            if (r == ExitStatus.NO_MOVE_PROGRESS) {
+              System.err.println("Failed to move some blocks after "
+                  + m.retryMaxAttempts + " retries. Exiting...");
+            } else if (r == ExitStatus.NO_MOVE_BLOCK) {
+              System.err.println("Some blocks can't be moved. Exiting...");
+            } else {
+              System.err.println("Mover failed. Exiting with status " + r
+                  + "... ");
+            }
             // must be an error statue, return
             return r.getExitCode();
           }
         }
         Thread.sleep(sleeptime);
       }
+      System.out.println("Mover Successful: all blocks satisfy"
+          + " the specified storage policy. Exiting...");
       return ExitStatus.SUCCESS.getExitCode();
     } finally {
       for (NameNodeConnector nnc : connectors) {
@@ -713,10 +749,12 @@ public class Mover {
 
     private boolean hasRemaining;
     private boolean noBlockMoved;
+    private boolean retryFailed;
 
     Result() {
       hasRemaining = false;
       noBlockMoved = true;
+      retryFailed = false;
     }
 
     boolean isHasRemaining() {
@@ -735,16 +773,25 @@ public class Mover {
       this.noBlockMoved = noBlockMoved;
     }
 
+    void setRetryFailed() {
+      this.retryFailed = true;
+    }
+
     /**
-     * @return SUCCESS if all moves are success and there is no remaining move.
+     * @return NO_MOVE_PROGRESS if no progress in move after some retry. Return
+     *         SUCCESS if all moves are success and there is no remaining move.
      *         Return NO_MOVE_BLOCK if there moves available but all the moves
      *         cannot be scheduled. Otherwise, return IN_PROGRESS since there
      *         must be some remaining moves.
      */
     ExitStatus getExitStatus() {
-      return !isHasRemaining() ? ExitStatus.SUCCESS
-          : isNoBlockMoved() ? ExitStatus.NO_MOVE_BLOCK
-              : ExitStatus.IN_PROGRESS;
+      if (retryFailed) {
+        return ExitStatus.NO_MOVE_PROGRESS;
+      } else {
+        return !isHasRemaining() ? ExitStatus.SUCCESS
+            : isNoBlockMoved() ? ExitStatus.NO_MOVE_BLOCK
+                : ExitStatus.IN_PROGRESS;
+      }
     }
 
   }

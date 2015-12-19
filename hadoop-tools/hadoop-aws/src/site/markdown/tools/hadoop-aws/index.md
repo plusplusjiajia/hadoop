@@ -206,7 +206,7 @@ If you do any of these: change your credentials immediately!
 
     <property>
       <name>fs.s3a.attempts.maximum</name>
-      <value>10</value>
+      <value>20</value>
       <description>How many times we should retry commands on transient errors.</description>
     </property>
 
@@ -218,7 +218,7 @@ If you do any of these: change your credentials immediately!
 
     <property>
       <name>fs.s3a.connection.timeout</name>
-      <value>50000</value>
+      <value>200000</value>
       <description>Socket connection timeout in milliseconds.</description>
     </property>
 
@@ -231,15 +231,9 @@ If you do any of these: change your credentials immediately!
 
     <property>
       <name>fs.s3a.threads.max</name>
-      <value>256</value>
+      <value>10</value>
       <description> Maximum number of concurrent active (part)uploads,
       which each use a thread from the threadpool.</description>
-    </property>
-
-    <property>
-      <name>fs.s3a.threads.core</name>
-      <value>15</value>
-      <description>Number of core threads in the threadpool.</description>
     </property>
 
     <property>
@@ -251,7 +245,7 @@ If you do any of these: change your credentials immediately!
 
     <property>
       <name>fs.s3a.max.total.tasks</name>
-      <value>1000</value>
+      <value>5</value>
       <description>Number of (part)uploads allowed to the queue before
       blocking additional uploads.</description>
     </property>
@@ -286,6 +280,12 @@ If you do any of these: change your credentials immediately!
       <name>fs.s3a.multipart.purge.age</name>
       <value>86400</value>
       <description>Minimum age in seconds of multipart uploads to purge</description>
+    </property>
+
+    <property>
+      <name>fs.s3a.signing-algorithm</name>
+      <description>Override the default signing algorithm so legacy
+        implementations can still be used</description>
     </property>
 
     <property>

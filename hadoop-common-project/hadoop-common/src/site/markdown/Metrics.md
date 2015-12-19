@@ -192,6 +192,7 @@ Each metrics record contains tags such as ProcessName, SessionId, and Hostname a
 | `PutImageNumOps` | Total number of fsimage uploads to SecondaryNameNode |
 | `PutImageAvgTime` | Average fsimage upload time in milliseconds |
 | `TotalFileOps`| Total number of file operations performed |
+| `NNStartedTimeInMillis`| NameNode start time in milliseconds |
 
 FSNamesystem
 ------------
@@ -216,6 +217,7 @@ Each metrics record contains tags such as HAState and Hostname as additional inf
 | `TotalLoad` | Current number of connections |
 | `SnapshottableDirectories` | Current number of snapshottable directories |
 | `Snapshots` | Current number of snapshots |
+| `NumEncryptionZones` | Current number of encryption zones |
 | `BlocksTotal` | Current number of allocated blocks in the system |
 | `FilesTotal` | Current number of files and directories |
 | `PendingReplicationBlocks` | Current number of blocks pending to be replicated |
@@ -229,7 +231,15 @@ Each metrics record contains tags such as HAState and Hostname as additional inf
 | `MillisSinceLastLoadedEdits` | (HA-only) Time in milliseconds since the last time standby NameNode load edit log. In active NameNode, set to 0 |
 | `BlockCapacity` | Current number of block capacity |
 | `StaleDataNodes` | Current number of DataNodes marked stale due to delayed heartbeat |
-| `TotalFiles` | Current number of files and directories (same as FilesTotal) |
+| `MissingReplOneBlocks` | Current number of missing blocks with replication factor 1 |
+| `NumFilesUnderConstruction` | Current number of files under construction |
+| `NumActiveClients` | Current number of active clients holding lease |
+| `HAState` | (HA-only) Current state of the NameNode: initializing or active or standby or stopping state |
+| `FSState` | Current state of the file system: Safemode or Operational |
+| `LockQueueLength` | Number of threads waiting to acquire FSNameSystem lock |
+| `TotalSyncCount` | Total number of sync operations performed by edit log |
+| `TotalSyncTimes` | Total number of milliseconds spent by various edit logs in sync operation|
+| `NameDirSize` | NameNode name directories size in bytes |
 
 JournalNode
 -----------
@@ -264,6 +274,7 @@ The server-side metrics for a journal from the JournalNode's perspective. Each m
 | `CurrentLagTxns` | The number of transactions that this JournalNode is lagging |
 | `LastWrittenTxId` | The highest transaction id stored on this JournalNode |
 | `LastPromisedEpoch` | The last epoch number which this node has promised not to accept any lower epoch, or 0 if no promises have been made |
+| `LastJournalTimestamp` | The timestamp of last successfully written transaction |
 
 datanode
 --------

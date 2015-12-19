@@ -52,8 +52,8 @@ public class DatanodeInfo extends DatanodeID implements Node {
   private int xceiverCount;
   private String location = NetworkTopology.DEFAULT_RACK;
   private String softwareVersion;
-  private List<String> dependentHostNames = new LinkedList<String>();
-
+  private List<String> dependentHostNames = new LinkedList<>();
+  private String upgradeDomain;
 
   // Datanode administrative states
   public enum AdminStates {
@@ -95,6 +95,7 @@ public class DatanodeInfo extends DatanodeID implements Node {
     this.xceiverCount = from.getXceiverCount();
     this.location = from.getNetworkLocation();
     this.adminState = from.getAdminState();
+    this.upgradeDomain = from.getUpgradeDomain();
   }
 
   public DatanodeInfo(DatanodeID nodeID) {
@@ -120,12 +121,13 @@ public class DatanodeInfo extends DatanodeID implements Node {
       final long capacity, final long dfsUsed, final long remaining,
       final long blockPoolUsed, final long cacheCapacity, final long cacheUsed,
       final long lastUpdate, final long lastUpdateMonotonic,
-      final int xceiverCount, final AdminStates adminState) {
+      final int xceiverCount, final AdminStates adminState,
+      final String upgradeDomain) {
     this(nodeID.getIpAddr(), nodeID.getHostName(), nodeID.getDatanodeUuid(),
         nodeID.getXferPort(), nodeID.getInfoPort(), nodeID.getInfoSecurePort(),
         nodeID.getIpcPort(), capacity, dfsUsed, remaining, blockPoolUsed,
         cacheCapacity, cacheUsed, lastUpdate, lastUpdateMonotonic,
-        xceiverCount, location, adminState);
+        xceiverCount, location, adminState, upgradeDomain);
   }
 
   /** Constructor */
@@ -137,6 +139,22 @@ public class DatanodeInfo extends DatanodeID implements Node {
       final long lastUpdate, final long lastUpdateMonotonic,
       final int xceiverCount, final String networkLocation,
       final AdminStates adminState) {
+    this(ipAddr, hostName, datanodeUuid, xferPort, infoPort, infoSecurePort,
+        ipcPort, capacity, dfsUsed, remaining, blockPoolUsed, cacheCapacity,
+        cacheUsed, lastUpdate, lastUpdateMonotonic, xceiverCount,
+        networkLocation, adminState, null);
+  }
+
+  /** Constructor */
+  public DatanodeInfo(final String ipAddr, final String hostName,
+      final String datanodeUuid, final int xferPort, final int infoPort,
+      final int infoSecurePort, final int ipcPort,
+      final long capacity, final long dfsUsed, final long remaining,
+      final long blockPoolUsed, final long cacheCapacity, final long cacheUsed,
+      final long lastUpdate, final long lastUpdateMonotonic,
+      final int xceiverCount, final String networkLocation,
+      final AdminStates adminState,
+      final String upgradeDomain) {
     super(ipAddr, hostName, datanodeUuid, xferPort, infoPort,
             infoSecurePort, ipcPort);
     this.capacity = capacity;
@@ -150,6 +168,7 @@ public class DatanodeInfo extends DatanodeID implements Node {
     this.xceiverCount = xceiverCount;
     this.location = networkLocation;
     this.adminState = adminState;
+    this.upgradeDomain = upgradeDomain;
   }
 
   /** Network location name */
@@ -300,6 +319,16 @@ public class DatanodeInfo extends DatanodeID implements Node {
     this.location = NodeBase.normalize(location);
   }
 
+  /** Sets the upgrade domain */
+  public void setUpgradeDomain(String upgradeDomain) {
+    this.upgradeDomain = upgradeDomain;
+  }
+
+  /** upgrade domain */
+  public String getUpgradeDomain() {
+    return upgradeDomain;
+  }
+
   /** Add a hostname to a list of network dependencies */
   public void addDependentHostName(String hostname) {
     dependentHostNames.add(hostname);
@@ -331,15 +360,18 @@ public class DatanodeInfo extends DatanodeID implements Node {
     float cacheRemainingPercent = getCacheRemainingPercent();
     String lookupName = NetUtils.getHostNameOfIP(getName());
 
-    buffer.append("Name: "+ getName());
+    buffer.append("Name: ").append(getName());
     if (lookupName != null) {
-      buffer.append(" (" + lookupName + ")");
+      buffer.append(" (").append(lookupName).append(")");
     }
     buffer.append("\n");
-    buffer.append("Hostname: " + getHostName() + "\n");
+    buffer.append("Hostname: ").append(getHostName()).append("\n");
 
     if (!NetworkTopology.DEFAULT_RACK.equals(location)) {
-      buffer.append("Rack: "+location+"\n");
+      buffer.append("Rack: ").append(location).append("\n");
+    }
+    if (upgradeDomain != null) {
+      buffer.append("Upgrade domain: ").append(upgradeDomain).append("\n");
     }
     buffer.append("Decommission Status : ");
     if (isDecommissioned()) {
@@ -349,19 +381,30 @@ public class DatanodeInfo extends DatanodeID implements Node {
     } else {
       buffer.append("Normal\n");
     }
-    buffer.append("Configured Capacity: "+c+" ("+StringUtils.byteDesc(c)+")"+"\n");
-    buffer.append("DFS Used: "+u+" ("+StringUtils.byteDesc(u)+")"+"\n");
-    buffer.append("Non DFS Used: "+nonDFSUsed+" ("+StringUtils.byteDesc(nonDFSUsed)+")"+"\n");
-    buffer.append("DFS Remaining: " +r+ " ("+StringUtils.byteDesc(r)+")"+"\n");
-    buffer.append("DFS Used%: "+percent2String(usedPercent) + "\n");
-    buffer.append("DFS Remaining%: "+percent2String(remainingPercent) + "\n");
-    buffer.append("Configured Cache Capacity: "+cc+" ("+StringUtils.byteDesc(cc)+")"+"\n");
-    buffer.append("Cache Used: "+cu+" ("+StringUtils.byteDesc(cu)+")"+"\n");
-    buffer.append("Cache Remaining: " +cr+ " ("+StringUtils.byteDesc(cr)+")"+"\n");
-    buffer.append("Cache Used%: "+percent2String(cacheUsedPercent) + "\n");
-    buffer.append("Cache Remaining%: "+percent2String(cacheRemainingPercent) + "\n");
-    buffer.append("Xceivers: "+getXceiverCount()+"\n");
-    buffer.append("Last contact: "+new Date(lastUpdate)+"\n");
+    buffer.append("Configured Capacity: ").append(c).append(" (")
+        .append(StringUtils.byteDesc(c)).append(")").append("\n");
+    buffer.append("DFS Used: ").append(u).append(" (")
+        .append(StringUtils.byteDesc(u)).append(")").append("\n");
+    buffer.append("Non DFS Used: ").append(nonDFSUsed).append(" (")
+        .append(StringUtils.byteDesc(nonDFSUsed)).append(")").append("\n");
+    buffer.append("DFS Remaining: ").append(r).append(" (")
+        .append(StringUtils.byteDesc(r)).append(")").append("\n");
+    buffer.append("DFS Used%: ").append(percent2String(usedPercent))
+        .append("\n");
+    buffer.append("DFS Remaining%: ").append(percent2String(remainingPercent))
+        .append("\n");
+    buffer.append("Configured Cache Capacity: ").append(cc).append(" (")
+        .append(StringUtils.byteDesc(cc)).append(")").append("\n");
+    buffer.append("Cache Used: ").append(cu).append(" (")
+        .append(StringUtils.byteDesc(cu)).append(")").append("\n");
+    buffer.append("Cache Remaining: ").append(cr).append(" (")
+        .append(StringUtils.byteDesc(cr)).append(")").append("\n");
+    buffer.append("Cache Used%: ").append(percent2String(cacheUsedPercent))
+        .append("\n");
+    buffer.append("Cache Remaining%: ")
+        .append(percent2String(cacheRemainingPercent)).append("\n");
+    buffer.append("Xceivers: ").append(getXceiverCount()).append("\n");
+    buffer.append("Last contact: ").append(new Date(lastUpdate)).append("\n");
     return buffer.toString();
   }
 
@@ -371,12 +414,17 @@ public class DatanodeInfo extends DatanodeID implements Node {
     long c = getCapacity();
     long r = getRemaining();
     long u = getDfsUsed();
+    float usedPercent = getDfsUsedPercent();
     long cc = getCacheCapacity();
     long cr = getCacheRemaining();
     long cu = getCacheUsed();
+    float cacheUsedPercent = getCacheUsedPercent();
     buffer.append(getName());
     if (!NetworkTopology.DEFAULT_RACK.equals(location)) {
-      buffer.append(" "+location);
+      buffer.append(" ").append(location);
+    }
+    if (upgradeDomain != null) {
+      buffer.append(" ").append(upgradeDomain);
     }
     if (isDecommissioned()) {
       buffer.append(" DD");
@@ -385,15 +433,21 @@ public class DatanodeInfo extends DatanodeID implements Node {
     } else {
       buffer.append(" IN");
     }
-    buffer.append(" " + c + "(" + StringUtils.byteDesc(c)+")");
-    buffer.append(" " + u + "(" + StringUtils.byteDesc(u)+")");
-    buffer.append(" " + percent2String(u/(double)c));
-    buffer.append(" " + r + "(" + StringUtils.byteDesc(r)+")");
-    buffer.append(" " + cc + "(" + StringUtils.byteDesc(cc)+")");
-    buffer.append(" " + cu + "(" + StringUtils.byteDesc(cu)+")");
-    buffer.append(" " + percent2String(cu/(double)cc));
-    buffer.append(" " + cr + "(" + StringUtils.byteDesc(cr)+")");
-    buffer.append(" " + new Date(lastUpdate));
+    buffer.append(" ").append(c).append("(").append(StringUtils.byteDesc(c))
+        .append(")");
+    buffer.append(" ").append(u).append("(").append(StringUtils.byteDesc(u))
+        .append(")");
+    buffer.append(" ").append(percent2String(usedPercent));
+    buffer.append(" ").append(r).append("(").append(StringUtils.byteDesc(r))
+        .append(")");
+    buffer.append(" ").append(cc).append("(").append(StringUtils.byteDesc(cc))
+        .append(")");
+    buffer.append(" ").append(cu).append("(").append(StringUtils.byteDesc(cu))
+        .append(")");
+    buffer.append(" ").append(percent2String(cacheUsedPercent));
+    buffer.append(" ").append(cr).append("(").append(StringUtils.byteDesc(cr))
+        .append(")");
+    buffer.append(" ").append(new Date(lastUpdate));
     return buffer.toString();
   }
 

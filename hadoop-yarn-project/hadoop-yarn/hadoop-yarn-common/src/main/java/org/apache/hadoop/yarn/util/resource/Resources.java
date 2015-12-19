@@ -150,7 +150,19 @@ public class Resources {
   public static Resource multiply(Resource lhs, double by) {
     return multiplyTo(clone(lhs), by);
   }
-  
+
+  /**
+   * Multiply @param rhs by @param by, and add the result to @param lhs
+   * without creating any new {@link Resource} object
+   */
+  public static Resource multiplyAndAddTo(
+      Resource lhs, Resource rhs, double by) {
+    lhs.setMemory(lhs.getMemory() + (int)(rhs.getMemory() * by));
+    lhs.setVirtualCores(lhs.getVirtualCores()
+        + (int)(rhs.getVirtualCores() * by));
+    return lhs;
+  }
+
   public static Resource multiplyAndNormalizeUp(
       ResourceCalculator calculator,Resource lhs, double by, Resource factor) {
     return calculator.multiplyAndNormalizeUp(lhs, by, factor);
@@ -254,6 +266,11 @@ public class Resources {
   public static boolean fitsIn(Resource smaller, Resource bigger) {
     return smaller.getMemory() <= bigger.getMemory() &&
         smaller.getVirtualCores() <= bigger.getVirtualCores();
+  }
+
+  public static boolean fitsIn(ResourceCalculator rc, Resource cluster,
+      Resource smaller, Resource bigger) {
+    return rc.fitsIn(cluster, smaller, bigger);
   }
   
   public static Resource componentwiseMin(Resource lhs, Resource rhs) {

@@ -26,6 +26,7 @@ import java.nio.charset.Charset;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 
 import com.google.common.base.Preconditions;
@@ -40,10 +41,12 @@ import org.apache.curator.retry.RetryNTimes;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceStability.Unstable;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.security.token.delegation.DelegationKey;
 import org.apache.hadoop.util.ZKUtil;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
+import org.apache.hadoop.yarn.api.records.ReservationId;
 import org.apache.hadoop.yarn.conf.HAUtil;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
@@ -52,6 +55,7 @@ import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.AMRM
 import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.ApplicationAttemptStateDataProto;
 import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.ApplicationStateDataProto;
 import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.EpochProto;
+import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.ReservationAllocationStateProto;
 import org.apache.hadoop.yarn.security.client.RMDelegationTokenIdentifier;
 import org.apache.hadoop.yarn.server.records.Version;
 import org.apache.hadoop.yarn.server.records.impl.pb.VersionPBImpl;
@@ -106,9 +110,18 @@ import com.google.common.annotations.VisibleForTesting;
  *        |----- currentMasterKey
  *        |----- nextMasterKey
  *
+ * |-- RESERVATION_SYSTEM_ROOT
+ *        |------PLAN_1
+ *        |      |------ RESERVATION_1
+ *        |      |------ RESERVATION_2
+ *        |      ....
+ *        |------PLAN_2
+ *        ....
  * Note: Changes from 1.1 to 1.2 - AMRMTokenSecretManager state has been saved
  * separately. The currentMasterkey and nextMasterkey have been stored.
  * Also, AMRMToken has been removed from ApplicationAttemptState.
+ *
+ * Changes from 1.2 to 1.3, Addition of ReservationSystem state.
  */
 @Private
 @Unstable
@@ -119,7 +132,7 @@ public class ZKRMStateStore extends RMStateStore {
 
   protected static final String ROOT_ZNODE_NAME = "ZKRMStateRoot";
   protected static final Version CURRENT_VERSION_INFO = Version
-      .newInstance(1, 2);
+      .newInstance(1, 3);
   private static final String RM_DELEGATION_TOKENS_ROOT_ZNODE_NAME =
       "RMDelegationTokensRoot";
   private static final String RM_DT_SEQUENTIAL_NUMBER_ZNODE_NAME =
@@ -141,6 +154,7 @@ public class ZKRMStateStore extends RMStateStore {
   private String delegationTokensRootPath;
   private String dtSequenceNumberPath;
   private String amrmTokenSecretManagerRoot;
+  private String reservationRoot;
   @VisibleForTesting
   protected String znodeWorkingPath;
 
@@ -257,6 +271,7 @@ public class ZKRMStateStore extends RMStateStore {
         RM_DT_SEQUENTIAL_NUMBER_ZNODE_NAME);
     amrmTokenSecretManagerRoot =
         getNodePath(zkRootNodePath, AMRMTOKEN_SECRET_MANAGER_ROOT);
+    reservationRoot = getNodePath(zkRootNodePath, RESERVATION_SYSTEM_ROOT);
   }
 
   @Override
@@ -267,8 +282,9 @@ public class ZKRMStateStore extends RMStateStore {
     // ensure root dirs exist
     createRootDirRecursively(znodeWorkingPath);
     create(zkRootNodePath);
-    if (HAUtil.isHAEnabled(getConfig())){
-      fence();
+    setRootNodeAcls();
+    delete(fencingNodePath);
+    if (HAUtil.isHAEnabled(getConfig())) {
       verifyActiveStatusThread = new VerifyActiveStatusThread();
       verifyActiveStatusThread.start();
     }
@@ -278,6 +294,7 @@ public class ZKRMStateStore extends RMStateStore {
     create(delegationTokensRootPath);
     create(dtSequenceNumberPath);
     create(amrmTokenSecretManagerRoot);
+    create(reservationRoot);
   }
 
   private void logRootNodeAcls(String prefix) throws Exception {
@@ -293,16 +310,19 @@ public class ZKRMStateStore extends RMStateStore {
     LOG.debug(builder.toString());
   }
 
-  private synchronized void fence() throws Exception {
-    if (LOG.isTraceEnabled()) {
-      logRootNodeAcls("Before fencing\n");
+  private void setRootNodeAcls() throws Exception {
+    if (LOG.isDebugEnabled()) {
+      logRootNodeAcls("Before setting ACLs'\n");
     }
 
-    curatorFramework.setACL().withACL(zkRootNodeAcl).forPath(zkRootNodePath);
-    delete(fencingNodePath);
+    if (HAUtil.isHAEnabled(getConfig())) {
+      curatorFramework.setACL().withACL(zkRootNodeAcl).forPath(zkRootNodePath);
+    } else {
+      curatorFramework.setACL().withACL(zkAcl).forPath(zkRootNodePath);
+    }
 
-    if (LOG.isTraceEnabled()) {
-      logRootNodeAcls("After fencing\n");
+    if (LOG.isDebugEnabled()) {
+      logRootNodeAcls("After setting ACLs'\n");
     }
   }
 
@@ -312,7 +332,7 @@ public class ZKRMStateStore extends RMStateStore {
       verifyActiveStatusThread.interrupt();
       verifyActiveStatusThread.join(1000);
     }
-    curatorFramework.close();
+    IOUtils.closeStream(curatorFramework);
   }
 
   @Override
@@ -374,7 +394,39 @@ public class ZKRMStateStore extends RMStateStore {
     loadRMAppState(rmState);
     // recover AMRMTokenSecretManager
     loadAMRMTokenSecretManagerState(rmState);
+    // recover reservation state
+    loadReservationSystemState(rmState);
     return rmState;
+  }
+
+  private void loadReservationSystemState(RMState rmState) throws Exception {
+    List<String> planNodes = getChildren(reservationRoot);
+    for (String planName : planNodes) {
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("Loading plan from znode: " + planName);
+      }
+      String planNodePath = getNodePath(reservationRoot, planName);
+
+      List<String> reservationNodes = getChildren(planNodePath);
+      for (String reservationNodeName : reservationNodes) {
+        String reservationNodePath = getNodePath(planNodePath,
+            reservationNodeName);
+        if (LOG.isDebugEnabled()) {
+          LOG.debug("Loading reservation from znode: " + reservationNodePath);
+        }
+        byte[] reservationData = getData(reservationNodePath);
+        ReservationAllocationStateProto allocationState =
+            ReservationAllocationStateProto.parseFrom(reservationData);
+        if (!rmState.getReservationState().containsKey(planName)) {
+          rmState.getReservationState().put(planName,
+              new HashMap<ReservationId, ReservationAllocationStateProto>());
+        }
+        ReservationId reservationId =
+            ReservationId.parseReservationId(reservationNodeName);
+        rmState.getReservationState().get(planName).put(reservationId,
+            allocationState);
+      }
+    }
   }
 
   private void loadAMRMTokenSecretManagerState(RMState rmState)
@@ -762,6 +814,70 @@ public class ZKRMStateStore extends RMStateStore {
     safeSetData(amrmTokenSecretManagerRoot, stateData, -1);
   }
 
+  @Override
+  protected synchronized void removeReservationState(String planName,
+      String reservationIdName)
+      throws Exception {
+    String planNodePath =
+        getNodePath(reservationRoot, planName);
+    String reservationPath = getNodePath(planNodePath,
+        reservationIdName);
+    if (LOG.isDebugEnabled()) {
+      LOG.debug("Removing reservationallocation " + reservationIdName + " for" +
+          " plan " + planName);
+    }
+    safeDelete(reservationPath);
+
+    List<String> reservationNodes = getChildren(planNodePath);
+    if (reservationNodes.isEmpty()) {
+      safeDelete(planNodePath);
+    }
+  }
+
+  @Override
+  protected synchronized void storeReservationState(
+      ReservationAllocationStateProto reservationAllocation, String planName,
+      String reservationIdName)
+      throws Exception {
+    SafeTransaction trx = new SafeTransaction();
+    addOrUpdateReservationState(
+        reservationAllocation, planName, reservationIdName, trx, false);
+    trx.commit();
+  }
+
+  private void addOrUpdateReservationState(
+      ReservationAllocationStateProto reservationAllocation, String planName,
+      String reservationIdName, SafeTransaction trx, boolean isUpdate)
+      throws Exception {
+    String planCreatePath =
+        getNodePath(reservationRoot, planName);
+    String reservationPath = getNodePath(planCreatePath,
+        reservationIdName);
+    byte[] reservationData = reservationAllocation.toByteArray();
+
+    if (!exists(planCreatePath)) {
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("Creating plan node: " + planName + " at: " + planCreatePath);
+      }
+      trx.create(planCreatePath, null, zkAcl, CreateMode.PERSISTENT);
+    }
+
+    if (isUpdate) {
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("Updating reservation: " + reservationIdName + " in plan:"
+            + planName + " at: " + reservationPath);
+      }
+      trx.setData(reservationPath, reservationData, -1);
+    } else {
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("Storing reservation: " + reservationIdName + " in plan:"
+            + planName + " at: " + reservationPath);
+      }
+      trx.create(reservationPath, reservationData, zkAcl,
+          CreateMode.PERSISTENT);
+    }
+  }
+
   /**
    * Utility function to ensure that the configured base znode exists.
    * This recursively creates the znode as well as all of its parents.
@@ -810,7 +926,8 @@ public class ZKRMStateStore extends RMStateStore {
     return curatorFramework.getData().forPath(path);
   }
 
-  private List<ACL> getACL(final String path) throws Exception {
+  @VisibleForTesting
+  List<ACL> getACL(final String path) throws Exception {
     return curatorFramework.getACL().forPath(path);
   }
 

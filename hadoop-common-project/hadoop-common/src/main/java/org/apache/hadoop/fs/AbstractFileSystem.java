@@ -64,7 +64,7 @@ import com.google.common.annotations.VisibleForTesting;
  * to the root of the "this" file system .
  */
 @InterfaceAudience.Public
-@InterfaceStability.Evolving /*Evolving for a release,to be changed to Stable */
+@InterfaceStability.Stable
 public abstract class AbstractFileSystem {
   static final Log LOG = LogFactory.getLog(AbstractFileSystem.class);
 
@@ -1234,6 +1234,19 @@ public abstract class AbstractFileSystem {
       throws IOException {
     throw new UnsupportedOperationException(getClass().getSimpleName()
         + " doesn't support setStoragePolicy");
+  }
+
+  /**
+   * Retrieve the storage policy for a given file or directory.
+   *
+   * @param src file or directory path.
+   * @return storage policy for give file.
+   * @throws IOException
+   */
+  public BlockStoragePolicySpi getStoragePolicy(final Path src)
+      throws IOException {
+    throw new UnsupportedOperationException(getClass().getSimpleName()
+        + " doesn't support getStoragePolicy");
   }
 
   /**

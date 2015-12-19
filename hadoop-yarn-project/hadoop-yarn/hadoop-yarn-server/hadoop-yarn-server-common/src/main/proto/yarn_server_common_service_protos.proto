@@ -24,6 +24,7 @@ package hadoop.yarn;
 
 import "yarn_protos.proto";
 import "yarn_server_common_protos.proto";
+import "yarn_service_protos.proto";
 
 message NodeLabelsProto {
   repeated NodeLabelProto nodeLabels = 1;
@@ -82,6 +83,8 @@ message NodeHeartbeatResponseProto {
   repeated ContainerIdProto containers_to_be_removed_from_nm = 9;
   repeated SystemCredentialsForAppsProto system_credentials_for_apps = 10;
   optional bool areNodeLabelsAcceptedByRM = 11 [default = false];
+  repeated ContainerProto containers_to_decrease = 12;
+  repeated SignalContainerRequestProto containers_to_signal = 13;
 }
 
 message SystemCredentialsForAppsProto {

@@ -37,7 +37,6 @@ import java.util.concurrent.ExecutorService;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import org.apache.commons.logging.impl.Log4JLogger;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.hdfs.qjournal.MiniJournalCluster;
@@ -99,6 +98,7 @@ public class TestQJMWithFaults {
   private static long determineMaxIpcNumber() throws Exception {
     Configuration conf = new Configuration();
     MiniJournalCluster cluster = new MiniJournalCluster.Builder(conf).build();
+    cluster.waitActive();
     QuorumJournalManager qjm = null;
     long ret;
     try {
@@ -147,6 +147,7 @@ public class TestQJMWithFaults {
         
         MiniJournalCluster cluster = new MiniJournalCluster.Builder(conf)
           .build();
+        cluster.waitActive();
         QuorumJournalManager qjm = null;
         try {
           qjm = createInjectableQJM(cluster);
@@ -209,7 +210,7 @@ public class TestQJMWithFaults {
       // If the user specifies a seed, then we should gather all the
       // IPC trace information so that debugging is easier. This makes
       // the test run about 25% slower otherwise.
-      ((Log4JLogger)ProtobufRpcEngine.LOG).getLogger().setLevel(Level.ALL);
+      GenericTestUtils.setLogLevel(ProtobufRpcEngine.LOG, Level.ALL);
     } else {
       seed = new Random().nextLong();
     }
@@ -219,6 +220,7 @@ public class TestQJMWithFaults {
     
     MiniJournalCluster cluster = new MiniJournalCluster.Builder(conf)
       .build();
+    cluster.waitActive();
     
     // Format the cluster using a non-faulty QJM.
     QuorumJournalManager qjmForInitialFormat =

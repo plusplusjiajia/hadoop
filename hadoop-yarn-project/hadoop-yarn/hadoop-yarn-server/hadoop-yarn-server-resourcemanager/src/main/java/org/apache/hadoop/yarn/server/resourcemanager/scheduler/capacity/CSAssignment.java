@@ -24,18 +24,24 @@ import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainer;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.NodeType;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.common.AssignmentInformation;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.common.fica.FiCaSchedulerApp;
+import org.apache.hadoop.yarn.util.resource.Resources;
 
 @Private
 @Unstable
 public class CSAssignment {
+  public static final CSAssignment NULL_ASSIGNMENT =
+      new CSAssignment(Resources.createResource(0, 0), NodeType.NODE_LOCAL);
 
-  final private Resource resource;
+  public static final CSAssignment SKIP_ASSIGNMENT = new CSAssignment(true);
+
+  private Resource resource;
   private NodeType type;
-  private final RMContainer excessReservation;
-  private final FiCaSchedulerApp application;
+  private RMContainer excessReservation;
+  private FiCaSchedulerApp application;
   private final boolean skipped;
   private boolean fulfilledReservation;
   private final AssignmentInformation assignmentInformation;
+  private boolean increaseAllocation;
 
   public CSAssignment(Resource resource, NodeType type) {
     this(resource, type, null, null, false, false);
@@ -67,6 +73,10 @@ public class CSAssignment {
   public Resource getResource() {
     return resource;
   }
+  
+  public void setResource(Resource resource) {
+    this.resource = resource;
+  }
 
   public NodeType getType() {
     return type;
@@ -80,8 +90,16 @@ public class CSAssignment {
     return application;
   }
 
+  public void setApplication(FiCaSchedulerApp application) {
+    this.application = application;
+  }
+
   public RMContainer getExcessReservation() {
     return excessReservation;
+  }
+
+  public void setExcessReservation(RMContainer rmContainer) {
+    excessReservation = rmContainer;
   }
 
   public boolean getSkipped() {
@@ -120,5 +138,13 @@ public class CSAssignment {
   
   public AssignmentInformation getAssignmentInformation() {
     return this.assignmentInformation;
+  }
+  
+  public boolean isIncreasedAllocation() {
+    return increaseAllocation;
+  }
+
+  public void setIncreasedAllocation(boolean flag) {
+    increaseAllocation = flag;
   }
 }

@@ -39,6 +39,7 @@ import org.apache.hadoop.hdfs.server.datanode.DataStorage;
 import org.apache.hadoop.hdfs.server.datanode.FinalizedReplica;
 import org.apache.hadoop.hdfs.server.datanode.ReplicaHandler;
 import org.apache.hadoop.hdfs.server.datanode.ReplicaInfo;
+import org.apache.hadoop.hdfs.server.datanode.ShortCircuitRegistry;
 import org.apache.hadoop.hdfs.server.datanode.StorageLocation;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsDatasetSpi;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsVolumeReference;
@@ -147,6 +148,9 @@ public class TestFsDatasetImpl {
     when(datanode.getDnConf()).thenReturn(dnConf);
     final BlockScanner disabledBlockScanner = new BlockScanner(datanode, conf);
     when(datanode.getBlockScanner()).thenReturn(disabledBlockScanner);
+    final ShortCircuitRegistry shortCircuitRegistry =
+        new ShortCircuitRegistry(conf);
+    when(datanode.getShortCircuitRegistry()).thenReturn(shortCircuitRegistry);
 
     createStorageDirs(storage, conf, NUM_INIT_VOLUMES);
     dataset = new FsDatasetImpl(datanode, storage, conf);
@@ -274,6 +278,7 @@ public class TestFsDatasetImpl {
   public void testChangeVolumeWithRunningCheckDirs() throws IOException {
     RoundRobinVolumeChoosingPolicy<FsVolumeImpl> blockChooser =
         new RoundRobinVolumeChoosingPolicy<>();
+    conf.setLong(DFSConfigKeys.DFS_DATANODE_SCAN_PERIOD_HOURS_KEY, -1);
     final BlockScanner blockScanner = new BlockScanner(datanode, conf);
     final FsVolumeList volumeList = new FsVolumeList(
         Collections.<VolumeFailureInfo>emptyList(), blockScanner, blockChooser);
@@ -364,12 +369,14 @@ public class TestFsDatasetImpl {
   
   @Test
   public void testDeletingBlocks() throws IOException {
-    MiniDFSCluster cluster = new MiniDFSCluster.Builder(new HdfsConfiguration()).build();
+    HdfsConfiguration conf = new HdfsConfiguration();
+    MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).build();
     try {
       cluster.waitActive();
       DataNode dn = cluster.getDataNodes().get(0);
       
-      FsDatasetImpl ds = (FsDatasetImpl) DataNodeTestUtils.getFSDataset(dn);
+      FsDatasetSpi<?> ds = DataNodeTestUtils.getFSDataset(dn);
+      ds.addBlockPool(BLOCKPOOL, conf);
       FsVolumeImpl vol;
       try (FsDatasetSpi.FsVolumeReferences volumes = ds.getFsVolumeReferences()) {
         vol = (FsVolumeImpl)volumes.get(0);
@@ -377,15 +384,11 @@ public class TestFsDatasetImpl {
 
       ExtendedBlock eb;
       ReplicaInfo info;
-      List<Block> blockList = new ArrayList<Block>();
+      List<Block> blockList = new ArrayList<>();
       for (int i = 1; i <= 63; i++) {
         eb = new ExtendedBlock(BLOCKPOOL, i, 1, 1000 + i);
-        info = new FinalizedReplica(
-            eb.getLocalBlock(), vol, vol.getCurrentDir().getParentFile());
-        ds.volumeMap.add(BLOCKPOOL, info);
-        info.getBlockFile().createNewFile();
-        info.getMetaFile().createNewFile();
-        blockList.add(info);
+        cluster.getFsDatasetTestUtils(0).createFinalizedReplica(eb);
+        blockList.add(eb.getLocalBlock());
       }
       ds.invalidate(BLOCKPOOL, blockList.toArray(new Block[0]));
       try {
@@ -397,12 +400,8 @@ public class TestFsDatasetImpl {
 
       blockList.clear();
       eb = new ExtendedBlock(BLOCKPOOL, 64, 1, 1064);
-      info = new FinalizedReplica(
-          eb.getLocalBlock(), vol, vol.getCurrentDir().getParentFile());
-      ds.volumeMap.add(BLOCKPOOL, info);
-      info.getBlockFile().createNewFile();
-      info.getMetaFile().createNewFile();
-      blockList.add(info);
+      cluster.getFsDatasetTestUtils(0).createFinalizedReplica(eb);
+      blockList.add(eb.getLocalBlock());
       ds.invalidate(BLOCKPOOL, blockList.toArray(new Block[0]));
       try {
         Thread.sleep(1000);

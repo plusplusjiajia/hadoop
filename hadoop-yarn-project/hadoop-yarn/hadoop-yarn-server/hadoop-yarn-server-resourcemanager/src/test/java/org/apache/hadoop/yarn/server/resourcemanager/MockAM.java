@@ -34,6 +34,7 @@ import org.apache.hadoop.yarn.api.protocolrecords.RegisterApplicationMasterRespo
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.Container;
 import org.apache.hadoop.yarn.api.records.ContainerId;
+import org.apache.hadoop.yarn.api.records.ContainerResourceChangeRequest;
 import org.apache.hadoop.yarn.api.records.FinalApplicationStatus;
 import org.apache.hadoop.yarn.api.records.Priority;
 import org.apache.hadoop.yarn.api.records.Resource;
@@ -235,6 +236,14 @@ public class MockAM {
           releases, null);
     return allocate(req);
   }
+  
+  public AllocateResponse sendContainerResizingRequest(
+      List<ContainerResourceChangeRequest> increaseRequests,
+      List<ContainerResourceChangeRequest> decreaseRequests) throws Exception {
+    final AllocateRequest req = AllocateRequest.newInstance(0, 0F, null, null,
+        null, increaseRequests, decreaseRequests);
+    return allocate(req);
+  }
 
   public AllocateResponse allocate(AllocateRequest allocateRequest)
             throws Exception {
@@ -309,16 +318,20 @@ public class MockAM {
   public ApplicationAttemptId getApplicationAttemptId() {
     return this.attemptId;
   }
-  
+
   public List<Container> allocateAndWaitForContainers(int nContainer,
       int memory, MockNM nm) throws Exception {
+    return allocateAndWaitForContainers("ANY", nContainer, memory, nm);
+  }
+
+  public List<Container> allocateAndWaitForContainers(String host,
+      int nContainer, int memory, MockNM nm) throws Exception {
     // AM request for containers
-    allocate("ANY", memory, nContainer, null);
+    allocate(host, memory, nContainer, null);
     // kick the scheduler
     nm.nodeHeartbeat(true);
-    List<Container> conts =
-        allocate(new ArrayList<ResourceRequest>(), null)
-            .getAllocatedContainers();
+    List<Container> conts = allocate(new ArrayList<ResourceRequest>(), null)
+        .getAllocatedContainers();
     while (conts.size() < nContainer) {
       nm.nodeHeartbeat(true);
       conts.addAll(allocate(new ArrayList<ResourceRequest>(),

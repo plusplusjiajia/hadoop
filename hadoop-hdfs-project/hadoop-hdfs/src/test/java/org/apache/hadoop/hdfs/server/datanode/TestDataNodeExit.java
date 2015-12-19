@@ -59,8 +59,10 @@ public class TestDataNodeExit {
 
   @After
   public void tearDown() throws Exception {
-    if (cluster != null)
+    if (cluster != null) {
       cluster.shutdown();
+      cluster = null;
+    }
   }
   
   private void stopBPServiceThreads(int numStopThreads, DataNode dn)
@@ -96,13 +98,13 @@ public class TestDataNodeExit {
   public void testSendOOBToPeers() throws Exception {
     DataNode dn = cluster.getDataNodes().get(0);
     DataXceiverServer spyXserver = Mockito.spy(dn.getXferServer());
-    NullPointerException e = new NullPointerException();
-    Mockito.doThrow(e).when(spyXserver).sendOOBToPeers();
+    NullPointerException npe = new NullPointerException();
+    Mockito.doThrow(npe).when(spyXserver).sendOOBToPeers();
     dn.xserver = spyXserver;
     try {
       dn.shutdown();
-    } catch (Throwable t) {
-      fail("DataNode shutdown should not have thrown exception " + t);
+    } catch (Exception e) {
+      fail("DataNode shutdown should not have thrown exception " + e);
     }
   }
 }
