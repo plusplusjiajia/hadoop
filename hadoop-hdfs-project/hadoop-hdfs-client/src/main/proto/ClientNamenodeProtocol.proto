@@ -113,6 +113,13 @@ message SetStoragePolicyRequestProto {
 message SetStoragePolicyResponseProto { // void response
 }
 
+message UnsetStoragePolicyRequestProto {
+  required string src = 1;
+}
+
+message UnsetStoragePolicyResponseProto {
+}
+
 message GetStoragePolicyRequestProto {
   required string path = 1;
 }
@@ -307,6 +314,7 @@ message GetFsStatsResponseProto {
   required uint64 missing_blocks = 6;
   optional uint64 missing_repl_one_blocks = 7;
   optional uint64 blocks_in_future = 8;
+  optional uint64 pending_deletion_blocks = 9;
 }
 
 enum DatanodeReportTypeProto {  // type of the datanode report
@@ -582,6 +590,14 @@ message GetContentSummaryResponseProto {
   required ContentSummaryProto summary = 1;
 }
 
+message GetQuotaUsageRequestProto {
+  required string path = 1;
+}
+
+message GetQuotaUsageResponseProto {
+  required QuotaUsageProto usage = 1;
+}
+
 message SetQuotaRequestProto {
   required string path = 1;
   required uint64 namespaceQuota = 2;
@@ -736,6 +752,8 @@ service ClientNamenodeProtocol {
       returns(SetReplicationResponseProto);
   rpc setStoragePolicy(SetStoragePolicyRequestProto)
       returns(SetStoragePolicyResponseProto);
+  rpc unsetStoragePolicy(UnsetStoragePolicyRequestProto)
+      returns(UnsetStoragePolicyResponseProto);
   rpc getStoragePolicy(GetStoragePolicyRequestProto)
       returns(GetStoragePolicyResponseProto);
   rpc getStoragePolicies(GetStoragePoliciesRequestProto)
@@ -879,4 +897,6 @@ service ClientNamenodeProtocol {
       returns(GetErasureCodingPoliciesResponseProto);
   rpc getErasureCodingPolicy(GetErasureCodingPolicyRequestProto)
       returns(GetErasureCodingPolicyResponseProto);
+  rpc getQuotaUsage(GetQuotaUsageRequestProto)
+      returns(GetQuotaUsageResponseProto);
 }

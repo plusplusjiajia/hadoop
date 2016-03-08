@@ -153,6 +153,7 @@ import org.apache.hadoop.fs.permission.AclStatus;
 import org.apache.hadoop.fs.permission.FsAction;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.fs.permission.PermissionStatus;
+import org.apache.hadoop.fs.QuotaUsage;
 import org.apache.hadoop.ha.HAServiceProtocol.HAServiceState;
 import org.apache.hadoop.ha.ServiceFailedException;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
@@ -195,9 +196,7 @@ import org.apache.hadoop.hdfs.security.token.delegation.DelegationTokenIdentifie
 import org.apache.hadoop.hdfs.security.token.delegation.DelegationTokenSecretManager;
 import org.apache.hadoop.hdfs.security.token.delegation.DelegationTokenSecretManager.SecretManagerState;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockCollection;
-import org.apache.hadoop.hdfs.server.blockmanagement.BlockIdManager;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
-import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoContiguous;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoStriped;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockUnderConstructionFeature;
@@ -237,6 +236,7 @@ import org.apache.hadoop.hdfs.server.namenode.top.TopConf;
 import org.apache.hadoop.hdfs.server.namenode.top.metrics.TopMetrics;
 import org.apache.hadoop.hdfs.server.namenode.top.window.RollingWindowManager;
 import org.apache.hadoop.hdfs.server.namenode.web.resources.NamenodeWebHdfsMethods;
+import org.apache.hadoop.hdfs.server.protocol.BlocksWithLocations;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeCommand;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeRegistration;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeStorageReport;
@@ -248,6 +248,7 @@ import org.apache.hadoop.hdfs.server.protocol.NamespaceInfo;
 import org.apache.hadoop.hdfs.server.protocol.StorageReceivedDeletedBlocks;
 import org.apache.hadoop.hdfs.server.protocol.StorageReport;
 import org.apache.hadoop.hdfs.server.protocol.VolumeFailureSummary;
+import org.apache.hadoop.hdfs.web.JsonUtil;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.ipc.CallerContext;
@@ -275,7 +276,6 @@ import org.apache.hadoop.util.VersionInfo;
 import org.apache.log4j.Appender;
 import org.apache.log4j.AsyncAppender;
 import org.apache.log4j.Logger;
-import org.codehaus.jackson.map.ObjectMapper;
 import org.mortbay.util.ajax.JSON;
 
 import com.google.common.annotations.VisibleForTesting;
@@ -316,8 +316,6 @@ import com.google.common.collect.Lists;
 public class FSNamesystem implements Namesystem, FSNamesystemMBean,
   NameNodeMXBean {
   public static final Log LOG = LogFactory.getLog(FSNamesystem.class);
-
-  private final BlockIdManager blockIdManager;
 
   boolean isAuditEnabled() {
     return (!isDefaultAuditLogger || auditLog.isInfoEnabled())
@@ -461,6 +459,7 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
 
   private final long minBlockSize;         // minimum block size
   final long maxBlocksPerFile;     // maximum # of blocks per file
+  private final int numCommittedAllowed;
 
   /** Lock to protect FSNamesystem. */
   private final FSNamesystemLock fsLock;
@@ -558,7 +557,6 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
   void clear() {
     dir.reset();
     dtSecretManager.reset();
-    blockIdManager.clear();
     leaseManager.removeAllLeases();
     snapshotManager.clearSnapshottableDirs();
     cacheManager.clear();
@@ -571,8 +569,7 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
   LeaseManager getLeaseManager() {
     return leaseManager;
   }
-  
-  @Override
+
   public boolean isHaEnabled() {
     return haEnabled;
   }
@@ -729,9 +726,8 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       }
 
       // block manager needs the haEnabled initialized
-      this.blockManager = new BlockManager(this, conf);
+      this.blockManager = new BlockManager(this, haEnabled, conf);
       this.datanodeStatistics = blockManager.getDatanodeManager().getDatanodeStatistics();
-      this.blockIdManager = new BlockIdManager(blockManager);
 
       // Get the checksum type from config
       String checksumTypeStr = conf.get(DFS_CHECKSUM_TYPE_KEY,
@@ -761,6 +757,9 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
           DFSConfigKeys.DFS_NAMENODE_MIN_BLOCK_SIZE_DEFAULT);
       this.maxBlocksPerFile = conf.getLong(DFSConfigKeys.DFS_NAMENODE_MAX_BLOCKS_PER_FILE_KEY,
           DFSConfigKeys.DFS_NAMENODE_MAX_BLOCKS_PER_FILE_DEFAULT);
+      this.numCommittedAllowed = conf.getInt(
+          DFSConfigKeys.DFS_NAMENODE_FILE_CLOSE_NUM_COMMITTED_ALLOWED_KEY,
+          DFSConfigKeys.DFS_NAMENODE_FILE_CLOSE_NUM_COMMITTED_ALLOWED_DEFAULT);
 
       this.dtpReplaceDatanodeOnFailure = ReplaceDatanodeOnFailure.get(conf);
       
@@ -890,7 +889,8 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
 
   private List<AuditLogger> initAuditLoggers(Configuration conf) {
     // Initialize the custom access loggers if configured.
-    Collection<String> alClasses = conf.getStringCollection(DFS_NAMENODE_AUDIT_LOGGERS_KEY);
+    Collection<String> alClasses =
+        conf.getTrimmedStringCollection(DFS_NAMENODE_AUDIT_LOGGERS_KEY);
     List<AuditLogger> auditLoggers = Lists.newArrayList();
     if (alClasses != null && !alClasses.isEmpty()) {
       for (String className : alClasses) {
@@ -987,6 +987,7 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
   
   @Override
   public void startSecretManagerIfNecessary() {
+    assert hasWriteLock() : "Starting secret manager needs write lock";
     boolean shouldRun = shouldUseDelegationTokens() &&
       !isInSafeMode() && getEditLog().isOpenForWrite();
     boolean running = dtSecretManager.isRunning();
@@ -1253,8 +1254,7 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       getFSImage().editLog.close();
     }
   }
-  
-  @Override
+
   public void checkOperation(OperationCategory op) throws StandbyException {
     if (haContext != null) {
       // null in some unit tests
@@ -1542,8 +1542,7 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
   public boolean isRunning() {
     return fsRunning;
   }
-  
-  @Override
+
   public boolean isInStandbyState() {
     if (haContext == null || haContext.getState() == null) {
       // We're still starting up. In this case, if HA is
@@ -1553,6 +1552,25 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
     }
 
     return HAServiceState.STANDBY == haContext.getState().getServiceState();
+  }
+
+  /**
+   * return a list of blocks & their locations on <code>datanode</code> whose
+   * total size is <code>size</code>
+   *
+   * @param datanode on which blocks are located
+   * @param size total size of blocks
+   */
+  public BlocksWithLocations getBlocks(DatanodeID datanode, long size)
+      throws IOException {
+    checkOperation(OperationCategory.READ);
+    readLock();
+    try {
+      checkOperation(OperationCategory.READ);
+      return getBlockManager().getBlocksWithLocations(datanode, size);
+    } finally {
+      readUnlock();
+    }
   }
 
   /**
@@ -1774,13 +1792,16 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       checkNameNodeSafeMode("Cannot concat " + target);
       stat = FSDirConcatOp.concat(dir, target, srcs, logRetryCache);
       success = true;
+    } catch (AccessControlException ace) {
+      logAuditEvent(success, "concat", Arrays.toString(srcs), target, stat);
+      throw ace;
     } finally {
       writeUnlock();
       if (success) {
         getEditLog().logSync();
       }
-      logAuditEvent(success, "concat", Arrays.toString(srcs), target, stat);
     }
+    logAuditEvent(success, "concat", Arrays.toString(srcs), target, stat);
   }
 
   /**
@@ -1939,6 +1960,28 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
     logAuditEvent(true, "setStoragePolicy", src, null, auditStat);
   }
 
+  /**
+   * unset storage policy set for a given file or a directory.
+   *
+   * @param src file/directory path
+   */
+  void unsetStoragePolicy(String src) throws IOException {
+    HdfsFileStatus auditStat;
+    checkOperation(OperationCategory.WRITE);
+    writeLock();
+    try {
+      checkOperation(OperationCategory.WRITE);
+      checkNameNodeSafeMode("Cannot unset storage policy for " + src);
+      auditStat = FSDirAttrOp.unsetStoragePolicy(dir, blockManager, src);
+    } catch (AccessControlException e) {
+      logAuditEvent(false, "unsetStoragePolicy", src);
+      throw e;
+    } finally {
+      writeUnlock();
+    }
+    getEditLog().logSync();
+    logAuditEvent(true, "unsetStoragePolicy", src, null, auditStat);
+  }
   /**
    * Get the storage policy for a file or a directory.
    *
@@ -2581,15 +2624,34 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
   boolean checkFileProgress(String src, INodeFile v, boolean checkall) {
     assert hasReadLock();
     if (checkall) {
-      return blockManager.checkBlocksProperlyReplicated(src, v
-          .getBlocks());
+      return checkBlocksComplete(src, true, v.getBlocks());
     } else {
-      // check the penultimate block of this file
-      BlockInfo b = v.getPenultimateBlock();
-      return b == null ||
-          blockManager.checkBlocksProperlyReplicated(
-              src, new BlockInfo[] { b });
+      final BlockInfo[] blocks = v.getBlocks();
+      final int i = blocks.length - numCommittedAllowed - 2;
+      return i < 0 || blocks[i] == null
+          || checkBlocksComplete(src, false, blocks[i]);
     }
+  }
+
+  /**
+   * Check if the blocks are COMPLETE;
+   * it may allow the last block to be COMMITTED.
+   */
+  private boolean checkBlocksComplete(String src, boolean allowCommittedBlock,
+      BlockInfo... blocks) {
+    final int n = allowCommittedBlock? numCommittedAllowed: 0;
+    for(int i = 0; i < blocks.length; i++) {
+      final short min = blockManager.getMinStorageNum(blocks[i]);
+      final String err = INodeFile.checkBlockComplete(blocks, i, n, min);
+      if (err != null) {
+        final int numNodes = blocks[i].numNodes();
+        LOG.info("BLOCK* " + err + "(numNodes= " + numNodes
+            + (numNodes < min ? " < " : " >= ")
+            + " minimum = " + min + ") in file " + src);
+        return false;
+      }
+    }
+    return true;
   }
 
   /**
@@ -2615,9 +2677,8 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
     boolean success = ret != null && ret.success;
     if (success) {
       getEditLog().logSync();
+      logAuditEvent(success, "rename", src, dst, ret.auditStat);
     }
-    logAuditEvent(success, "rename", src, dst,
-        ret == null ? null : ret.auditStat);
     return success;
   }
 
@@ -2722,7 +2783,9 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       List<INode> removedINodes,
       final boolean acquireINodeMapLock) {
     assert hasWriteLock();
-    leaseManager.removeLeases(removedUCFiles);
+    for(long i : removedUCFiles) {
+      leaseManager.removeLease(i);
+    }
     // remove inodes from inodesMap
     if (removedINodes != null) {
       if (acquireINodeMapLock) {
@@ -2829,16 +2892,52 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
     checkOperation(OperationCategory.READ);
     readLock();
     boolean success = true;
+    ContentSummary cs;
     try {
       checkOperation(OperationCategory.READ);
-      return FSDirStatAndListingOp.getContentSummary(dir, src);
+      cs = FSDirStatAndListingOp.getContentSummary(dir, src);
     } catch (AccessControlException ace) {
       success = false;
+      logAuditEvent(success, "contentSummary", src);
       throw ace;
     } finally {
       readUnlock();
-      logAuditEvent(success, "contentSummary", src);
     }
+    logAuditEvent(success, "contentSummary", src);
+    return cs;
+  }
+
+  /**
+   * Get the quota usage for a specific file/dir.
+   *
+   * @param src The string representation of the path to the file
+   *
+   * @throws AccessControlException if access is denied
+   * @throws UnresolvedLinkException if a symlink is encountered.
+   * @throws FileNotFoundException if no file exists
+   * @throws StandbyException
+   * @throws IOException for issues with writing to the audit log
+   *
+   * @return object containing information regarding the file
+   *         or null if file not found
+   */
+  QuotaUsage getQuotaUsage(final String src) throws IOException {
+    checkOperation(OperationCategory.READ);
+    QuotaUsage quotaUsage;
+    readLock();
+    boolean success = true;
+    try {
+      checkOperation(OperationCategory.READ);
+      quotaUsage = FSDirStatAndListingOp.getQuotaUsage(dir, src);
+    } catch (AccessControlException ace) {
+      success = false;
+      logAuditEvent(success, "quotaUsage", src);
+      throw ace;
+    } finally {
+      readUnlock();
+    }
+    logAuditEvent(success, "quotaUsage", src);
+    return quotaUsage;
   }
 
   /**
@@ -2861,13 +2960,16 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       checkNameNodeSafeMode("Cannot set quota on " + src);
       FSDirAttrOp.setQuota(dir, src, nsQuota, ssQuota, type);
       success = true;
+    } catch (AccessControlException ace) {
+      logAuditEvent(success, "setQuota", src);
+      throw ace;
     } finally {
       writeUnlock();
       if (success) {
         getEditLog().logSync();
       }
-      logAuditEvent(success, "setQuota", src);
     }
+    logAuditEvent(success, "setQuota", src);
   }
 
   /** Persist all metadata about this file.
@@ -2951,7 +3053,7 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
     // then reap lease immediately and close the file.
     if(nrCompleteBlocks == nrBlocks) {
       finalizeINodeFileUnderConstruction(src, pendingFile,
-          iip.getLatestSnapshotId());
+          iip.getLatestSnapshotId(), false);
       NameNode.stateChangeLog.warn("BLOCK*"
         + " internalReleaseLease: All existing blocks are COMPLETE,"
         + " lease removed, file closed.");
@@ -2990,7 +3092,7 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       if(penultimateBlockMinStorage &&
           blockManager.hasMinStorage(lastBlock)) {
         finalizeINodeFileUnderConstruction(src, pendingFile,
-            iip.getLatestSnapshotId());
+            iip.getLatestSnapshotId(), false);
         NameNode.stateChangeLog.warn("BLOCK*"
           + " internalReleaseLease: Committed blocks are minimally replicated,"
           + " lease removed, file closed.");
@@ -3034,14 +3136,14 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
         // We can remove this block and close the file.
         pendingFile.removeLastBlock(lastBlock);
         finalizeINodeFileUnderConstruction(src, pendingFile,
-            iip.getLatestSnapshotId());
+            iip.getLatestSnapshotId(), false);
         NameNode.stateChangeLog.warn("BLOCK* internalReleaseLease: "
             + "Removed empty last block and closed file.");
         return true;
       }
       // start recovery of the last block for this file
       long blockRecoveryId = nextGenerationStamp(
-          blockIdManager.isLegacyBlock(lastBlock));
+          blockManager.isLegacyBlock(lastBlock));
       lease = reassignLease(lease, src, recoveryLeaseHolder, pendingFile);
       if(copyOnTruncate) {
         lastBlock.setGenerationStamp(blockRecoveryId);
@@ -3120,8 +3222,23 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
     }
   }
 
-  void finalizeINodeFileUnderConstruction(
-      String src, INodeFile pendingFile, int latestSnapshot) throws IOException {
+  void addCommittedBlocksToPending(final INodeFile pendingFile) {
+    final BlockInfo[] blocks = pendingFile.getBlocks();
+    int i = blocks.length - numCommittedAllowed;
+    if (i < 0) {
+      i = 0;
+    }
+    for(; i < blocks.length; i++) {
+      final BlockInfo b = blocks[i];
+      if (b != null && b.getBlockUCState() == BlockUCState.COMMITTED) {
+        // b is COMMITTED but not yet COMPLETE, add it to pending replication.
+        blockManager.addExpectedReplicasToPending(b);
+      }
+    }
+  }
+
+  void finalizeINodeFileUnderConstruction(String src, INodeFile pendingFile,
+      int latestSnapshot, boolean allowCommittedBlock) throws IOException {
     assert hasWriteLock();
 
     FileUnderConstructionFeature uc = pendingFile.getFileUnderConstructionFeature();
@@ -3136,7 +3253,9 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
     // The file is no longer pending.
     // Create permanent INode, update blocks. No need to replace the inode here
     // since we just remove the uc feature from pendingFile
-    pendingFile.toCompleteFile(now());
+    pendingFile.toCompleteFile(now(),
+        allowCommittedBlock? numCommittedAllowed: 0,
+        blockManager.getMinReplication());
 
     // close file and persist block allocations for this file
     closeFile(src, pendingFile);
@@ -3285,57 +3404,42 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
           storedBlock.setNumBytes(newlength);
         }
 
-        // find the DatanodeDescriptor objects
-        ArrayList<DatanodeDescriptor> trimmedTargets =
-            new ArrayList<DatanodeDescriptor>(newtargets.length);
-        ArrayList<String> trimmedStorages =
-            new ArrayList<String>(newtargets.length);
-        if (newtargets.length > 0) {
-          for (int i = 0; i < newtargets.length; ++i) {
-            // try to get targetNode
-            DatanodeDescriptor targetNode =
-                blockManager.getDatanodeManager().getDatanode(newtargets[i]);
-            if (targetNode != null) {
-              trimmedTargets.add(targetNode);
-              trimmedStorages.add(newtargetstorages[i]);
-            } else if (LOG.isDebugEnabled()) {
-              LOG.debug("DatanodeDescriptor (=" + newtargets[i] + ") not found");
-            }
-          }
-        }
-        if ((closeFile) && !trimmedTargets.isEmpty()) {
+        // Find the target DatanodeStorageInfos. If not found because of invalid
+        // or empty DatanodeID/StorageID, the slot of same offset in dsInfos is
+        // null
+        final DatanodeStorageInfo[] dsInfos = blockManager.getDatanodeManager().
+            getDatanodeStorageInfos(newtargets, newtargetstorages,
+                "src=%s, oldBlock=%s, newgenerationstamp=%d, newlength=%d",
+                src, oldBlock, newgenerationstamp, newlength);
+
+        if (closeFile && dsInfos != null) {
           // the file is getting closed. Insert block locations into blockManager.
           // Otherwise fsck will report these blocks as MISSING, especially if the
           // blocksReceived from Datanodes take a long time to arrive.
-          for (int i = 0; i < trimmedTargets.size(); i++) {
-            DatanodeStorageInfo storageInfo =
-                trimmedTargets.get(i).getStorageInfo(trimmedStorages.get(i));
-            if (storageInfo != null) {
+          for (int i = 0; i < dsInfos.length; i++) {
+            if (dsInfos[i] != null) {
               if(copyTruncate) {
-                storageInfo.addBlock(truncatedBlock, truncatedBlock);
+                dsInfos[i].addBlock(truncatedBlock, truncatedBlock);
               } else {
-                storageInfo.addBlock(storedBlock, storedBlock);
+                Block bi = new Block(storedBlock);
+                if (storedBlock.isStriped()) {
+                  bi.setBlockId(bi.getBlockId() + i);
+                }
+                dsInfos[i].addBlock(storedBlock, bi);
               }
             }
           }
         }
 
         // add pipeline locations into the INodeUnderConstruction
-        DatanodeStorageInfo[] trimmedStorageInfos =
-            blockManager.getDatanodeManager().getDatanodeStorageInfos(
-                trimmedTargets.toArray(new DatanodeID[trimmedTargets.size()]),
-                trimmedStorages.toArray(new String[trimmedStorages.size()]),
-                "src=%s, oldBlock=%s, newgenerationstamp=%d, newlength=%d",
-                src, oldBlock, newgenerationstamp, newlength);
-
         if(copyTruncate) {
-          iFile.convertLastBlockToUC(truncatedBlock, trimmedStorageInfos);
+          iFile.convertLastBlockToUC(truncatedBlock, dsInfos);
         } else {
-          iFile.convertLastBlockToUC(storedBlock, trimmedStorageInfos);
+          iFile.convertLastBlockToUC(storedBlock, dsInfos);
           if (closeFile) {
             blockManager.markBlockReplicasAsCorrupt(oldBlock.getLocalBlock(),
                 storedBlock, oldGenerationStamp, oldNumBytes,
-                trimmedStorageInfos);
+                dsInfos);
           }
         }
       }
@@ -3343,7 +3447,7 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       if (closeFile) {
         if(copyTruncate) {
           closeFileCommitBlocks(src, iFile, truncatedBlock);
-          if(!iFile.isBlockInLatestSnapshot((BlockInfoContiguous) storedBlock)) {
+          if(!iFile.isBlockInLatestSnapshot(storedBlock)) {
             blockManager.removeBlock(storedBlock);
           }
         } else {
@@ -3384,8 +3488,8 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
     commitOrCompleteLastBlock(pendingFile, iip, storedBlock);
 
     //remove lease, close file
-    finalizeINodeFileUnderConstruction(src, pendingFile,
-        Snapshot.findLatestSnapshot(pendingFile, Snapshot.CURRENT_STATE_ID));
+    int s = Snapshot.findLatestSnapshot(pendingFile, Snapshot.CURRENT_STATE_ID);
+    finalizeINodeFileUnderConstruction(src, pendingFile, s, false);
   }
 
   /**
@@ -3519,6 +3623,37 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
     } finally {
       readUnlock();
     }
+  }
+
+  /**
+   * Handles a lifeline message sent by a DataNode.  This method updates contact
+   * information and statistics for the DataNode, so that it doesn't time out.
+   * Unlike a heartbeat, this method does not dispatch any commands back to the
+   * DataNode for local execution.  This method also cannot request a lease for
+   * sending a full block report.  Lifeline messages are used only as a fallback
+   * in case something prevents successful delivery of heartbeat messages.
+   * Therefore, the implementation of this method must remain lightweight
+   * compared to heartbeat handling.  It should avoid lock contention and
+   * expensive computation.
+   *
+   * @param nodeReg registration info for DataNode sending the lifeline
+   * @param reports storage reports from DataNode
+   * @param cacheCapacity cache capacity at DataNode
+   * @param cacheUsed cache used at DataNode
+   * @param xceiverCount estimated count of transfer threads running at DataNode
+   * @param xmitsInProgress count of transfers running at DataNode
+   * @param failedVolumes count of failed volumes at DataNode
+   * @param volumeFailureSummary info on failed volumes at DataNode
+   * @throws IOException if there is an error
+   */
+  void handleLifeline(DatanodeRegistration nodeReg, StorageReport[] reports,
+      long cacheCapacity, long cacheUsed, int xceiverCount, int xmitsInProgress,
+      int failedVolumes, VolumeFailureSummary volumeFailureSummary)
+      throws IOException {
+    int maxTransfer = blockManager.getMaxReplicationStreams() - xmitsInProgress;
+    blockManager.getDatanodeManager().handleLifeline(nodeReg, reports,
+        getBlockPoolId(), cacheCapacity, cacheUsed, xceiverCount, maxTransfer,
+        failedVolumes, volumeFailureSummary);
   }
 
   /**
@@ -3781,6 +3916,8 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
         getMissingReplOneBlocksCount();
     stats[ClientProtocol.GET_STATS_BYTES_IN_FUTURE_BLOCKS_IDX] =
         blockManager.getBytesInFuture();
+    stats[ClientProtocol.GET_STATS_PENDING_DELETION_BLOCKS_IDX] =
+        blockManager.getPendingDeletionBlocksCount();
     return stats;
   }
 
@@ -4022,29 +4159,13 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       checkSuperuserPrivilege();
       switch(action) {
       case SAFEMODE_LEAVE: // leave safe mode
-        if (blockManager.getBytesInFuture() > 0) {
-          LOG.error("Refusing to leave safe mode without a force flag. " +
-              "Exiting safe mode will cause a deletion of " + blockManager
-              .getBytesInFuture() + " byte(s). Please use " +
-              "-forceExit flag to exit safe mode forcefully and data loss is " +
-              "acceptable.");
-        } else {
-          leaveSafeMode();
-        }
+        leaveSafeMode(false);
         break;
       case SAFEMODE_ENTER: // enter safe mode
         enterSafeMode(false);
         break;
       case SAFEMODE_FORCE_EXIT:
-        if (blockManager.getBytesInFuture() > 0) {
-          LOG.warn("Leaving safe mode due to forceExit. This will cause a data "
-              + "loss of " + blockManager.getBytesInFuture() + " byte(s).");
-          blockManager.clearBytesInFuture();
-        } else {
-          LOG.warn("forceExit used when normal exist would suffice. Treating " +
-              "force exit as normal safe mode exit.");
-        }
-        leaveSafeMode();
+        leaveSafeMode(true);
         break;
       default:
         LOG.error("Unexpected safe mode action");
@@ -4141,16 +4262,19 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
 
   /**
    * Leave safe mode.
+   * @param force true if to leave safe mode forcefully with -forceExit option
    */
-  void leaveSafeMode() {
+  void leaveSafeMode(boolean force) {
     writeLock();
     try {
       if (!isInSafeMode()) {
         NameNode.stateChangeLog.info("STATE* Safe mode is already OFF"); 
         return;
       }
-      setManualAndResourceLowSafeMode(false, false);
-      blockManager.leaveSafeMode(true);
+      if (blockManager.leaveSafeMode(force)) {
+        setManualAndResourceLowSafeMode(false, false);
+        startSecretManagerIfNecessary();
+      }
     } finally {
       writeUnlock();
     }
@@ -4248,9 +4372,7 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
     return new PermissionStatus(fsOwner.getShortUserName(), supergroup, permission);
   }
 
-  @Override
-  public void checkSuperuserPrivilege()
-      throws AccessControlException {
+  void checkSuperuserPrivilege() throws AccessControlException {
     if (isPermissionEnabled) {
       FSPermissionChecker pc = getPermissionChecker();
       pc.checkSuperuserPrivilege();
@@ -4497,9 +4619,8 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
     Map<String, Object> topMap = new TreeMap<String, Object>();
     topMap.put("windows", topWindows);
     topMap.put("timestamp", DFSUtil.dateToIso8601String(now));
-    ObjectMapper mapper = new ObjectMapper();
     try {
-      return mapper.writeValueAsString(topMap);
+      return JsonUtil.toJsonString(topMap);
     } catch (IOException e) {
       LOG.warn("Failed to fetch TopUser metrics", e);
     }
@@ -4510,15 +4631,15 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
    * Increments, logs and then returns the stamp
    */
   long nextGenerationStamp(boolean legacyBlock)
-      throws IOException, SafeModeException {
+      throws IOException {
     assert hasWriteLock();
     checkNameNodeSafeMode("Cannot get next generation stamp");
 
-    long gs = blockIdManager.nextGenerationStamp(legacyBlock);
+    long gs = blockManager.nextGenerationStamp(legacyBlock);
     if (legacyBlock) {
-      getEditLog().logGenerationStampV1(gs);
+      getEditLog().logLegacyGenerationStamp(gs);
     } else {
-      getEditLog().logGenerationStampV2(gs);
+      getEditLog().logGenerationStamp(gs);
     }
 
     // NB: callers sync the log
@@ -4532,8 +4653,7 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
   private long nextBlockId(boolean isStriped) throws IOException {
     assert hasWriteLock();
     checkNameNodeSafeMode("Cannot get next block ID");
-    final long blockId = isStriped ?
-        blockIdManager.nextStripedBlockId() : blockIdManager.nextContiguousBlockId();
+    final long blockId = blockManager.nextBlockId(isStriped);
     getEditLog().logAllocateBlockId(blockId);
     // NB: callers sync the log
     return blockId;
@@ -4660,7 +4780,8 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       final INodeFile file = checkUCBlock(block, clientName);
   
       // get a new generation stamp and an access token
-      block.setGenerationStamp(nextGenerationStamp(blockIdManager.isLegacyBlock(block.getLocalBlock())));
+      block.setGenerationStamp(nextGenerationStamp(
+          blockManager.isLegacyBlock(block.getLocalBlock())));
 
       locatedBlock = BlockManager.newLocatedBlock(
           block, file.getLastBlock(), null, -1);
@@ -5500,10 +5621,6 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
     return blockManager;
   }
 
-  public BlockIdManager getBlockIdManager() {
-    return blockIdManager;
-  }
-
   /** @return the FSDirectory. */
   public FSDirectory getFSDirectory() {
     return dir;
@@ -5542,6 +5659,10 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
         for (FSNamesystem.CorruptFileBlockInfo c : corruptFileBlocks) {
           list.add(c.toString());
         }
+      }
+    } catch (StandbyException e) {
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("Get corrupt file blocks returned error: " + e.getMessage());
       }
     } catch (IOException e) {
       LOG.warn("Get corrupt file blocks returned error: " + e.getMessage());
@@ -5639,11 +5760,6 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       throw it;
     }
   }
-  
-  @Override
-  public boolean isGenStampInFuture(Block block) {
-    return blockIdManager.isGenStampInFuture(block);
-  }
 
   @VisibleForTesting
   public EditLogTailer getEditLogTailer() {
@@ -5723,17 +5839,23 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
   String createSnapshot(String snapshotRoot, String snapshotName,
                         boolean logRetryCache) throws IOException {
     String snapshotPath = null;
+    boolean success = false;
     writeLock();
     try {
       checkOperation(OperationCategory.WRITE);
       checkNameNodeSafeMode("Cannot create snapshot for " + snapshotRoot);
       snapshotPath = FSDirSnapshotOp.createSnapshot(dir,
           snapshotManager, snapshotRoot, snapshotName, logRetryCache);
+      success = true;
+    } catch (AccessControlException ace) {
+      logAuditEvent(success, "createSnapshot", snapshotRoot,
+          snapshotPath, null);
+      throw ace;
     } finally {
       writeUnlock();
     }
     getEditLog().logSync();
-    logAuditEvent(snapshotPath != null, "createSnapshot", snapshotRoot,
+    logAuditEvent(success, "createSnapshot", snapshotRoot,
         snapshotPath, null);
     return snapshotPath;
   }
@@ -5750,6 +5872,8 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       String path, String snapshotOldName, String snapshotNewName,
       boolean logRetryCache) throws IOException {
     boolean success = false;
+    String oldSnapshotRoot = Snapshot.getSnapshotPath(path, snapshotOldName);
+    String newSnapshotRoot = Snapshot.getSnapshotPath(path, snapshotNewName);
     writeLock();
     try {
       checkOperation(OperationCategory.WRITE);
@@ -5757,12 +5881,14 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       FSDirSnapshotOp.renameSnapshot(dir, snapshotManager, path,
           snapshotOldName, snapshotNewName, logRetryCache);
       success = true;
+    } catch (AccessControlException ace) {
+      logAuditEvent(success, "renameSnapshot", oldSnapshotRoot,
+          newSnapshotRoot, null);
+      throw ace;
     } finally {
       writeUnlock();
     }
     getEditLog().logSync();
-    String oldSnapshotRoot = Snapshot.getSnapshotPath(path, snapshotOldName);
-    String newSnapshotRoot = Snapshot.getSnapshotPath(path, snapshotNewName);
     logAuditEvent(success, "renameSnapshot", oldSnapshotRoot,
         newSnapshotRoot, null);
   }
@@ -5784,6 +5910,9 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       checkOperation(OperationCategory.READ);
       status = FSDirSnapshotOp.getSnapshottableDirListing(dir, snapshotManager);
       success = true;
+    } catch (AccessControlException ace) {
+      logAuditEvent(success, "listSnapshottableDirectory", null, null, null);
+      throw ace;
     } finally {
       readUnlock();
     }
@@ -5810,19 +5939,25 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       String fromSnapshot, String toSnapshot) throws IOException {
     SnapshotDiffReport diffs = null;
     checkOperation(OperationCategory.READ);
+    boolean success = false;
+    String fromSnapshotRoot = (fromSnapshot == null || fromSnapshot.isEmpty()) ?
+        path : Snapshot.getSnapshotPath(path, fromSnapshot);
+    String toSnapshotRoot = (toSnapshot == null || toSnapshot.isEmpty()) ?
+        path : Snapshot.getSnapshotPath(path, toSnapshot);
     readLock();
     try {
       checkOperation(OperationCategory.READ);
       diffs = FSDirSnapshotOp.getSnapshotDiffReport(dir, snapshotManager,
           path, fromSnapshot, toSnapshot);
+      success = true;
+    } catch (AccessControlException ace) {
+      logAuditEvent(success, "computeSnapshotDiff", fromSnapshotRoot,
+          toSnapshotRoot, null);
+      throw ace;
     } finally {
       readUnlock();
     }
-    String fromSnapshotRoot = (fromSnapshot == null || fromSnapshot.isEmpty()) ?
-        path : Snapshot.getSnapshotPath(path, fromSnapshot);
-    String toSnapshotRoot = (toSnapshot == null || toSnapshot.isEmpty()) ?
-        path : Snapshot.getSnapshotPath(path, toSnapshot);
-    logAuditEvent(diffs != null, "computeSnapshotDiff", fromSnapshotRoot,
+    logAuditEvent(success, "computeSnapshotDiff", fromSnapshotRoot,
         toSnapshotRoot, null);
     return diffs;
   }
@@ -5837,15 +5972,19 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
   void deleteSnapshot(String snapshotRoot, String snapshotName,
       boolean logRetryCache) throws IOException {
     boolean success = false;
+    String rootPath = null;
     writeLock();
     BlocksMapUpdateInfo blocksToBeDeleted = null;
     try {
       checkOperation(OperationCategory.WRITE);
       checkNameNodeSafeMode("Cannot delete snapshot for " + snapshotRoot);
-
+      rootPath = Snapshot.getSnapshotPath(snapshotRoot, snapshotName);
       blocksToBeDeleted = FSDirSnapshotOp.deleteSnapshot(dir, snapshotManager,
           snapshotRoot, snapshotName, logRetryCache);
       success = true;
+    } catch (AccessControlException ace) {
+      logAuditEvent(success, "deleteSnapshot", rootPath, null, null);
+      throw ace;
     } finally {
       writeUnlock();
     }
@@ -5856,8 +5995,6 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
     if (blocksToBeDeleted != null) {
       removeBlocks(blocksToBeDeleted);
     }
-
-    String rootPath = Snapshot.getSnapshotPath(snapshotRoot, snapshotName);
     logAuditEvent(success, "deleteSnapshot", rootPath, null, null);
   }
 
@@ -5915,9 +6052,7 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
     }
 
     getEditLog().logSync();
-    if (auditLog.isInfoEnabled() && isExternalInvocation()) {
-      logAuditEvent(true, "startRollingUpgrade", null, null, null);
-    }
+    logAuditEvent(true, "startRollingUpgrade", null, null, null);
     return rollingUpgradeInfo;
   }
 
@@ -6108,10 +6243,7 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       // Sync not needed for ha since the edit was rolled after logging.
       getEditLog().logSync();
     }
-
-    if (auditLog.isInfoEnabled() && isExternalInvocation()) {
-      logAuditEvent(true, "finalizeRollingUpgrade", null, null, null);
-    }
+    logAuditEvent(true, "finalizeRollingUpgrade", null, null, null);
     return rollingUpgradeInfo;
   }
 
@@ -6124,6 +6256,8 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
                          EnumSet<CacheFlag> flags, boolean logRetryCache)
       throws IOException {
     CacheDirectiveInfo effectiveDirective = null;
+    boolean success = false;
+    String effectiveDirectiveStr;
     if (!flags.contains(CacheFlag.FORCE)) {
       cacheManager.waitForRescanIfNeeded();
     }
@@ -6133,24 +6267,27 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       checkNameNodeSafeMode("Cannot add cache directive");
       effectiveDirective = FSNDNCacheOp.addCacheDirective(this, cacheManager,
           directive, flags, logRetryCache);
+      success = true;
+    } catch (AccessControlException ace) {
+      logAuditEvent(success, "addCacheDirective", null,
+          null, null);
+      throw ace;
     } finally {
       writeUnlock();
-      boolean success = effectiveDirective != null;
       if (success) {
         getEditLog().logSync();
       }
-
-      String effectiveDirectiveStr = effectiveDirective != null ?
-          effectiveDirective.toString() : null;
-      logAuditEvent(success, "addCacheDirective", effectiveDirectiveStr,
-          null, null);
     }
-    return effectiveDirective != null ? effectiveDirective.getId() : 0;
+    effectiveDirectiveStr = effectiveDirective.toString();
+    logAuditEvent(success, "addCacheDirective", effectiveDirectiveStr,
+        null, null);
+    return effectiveDirective.getId();
   }
 
   void modifyCacheDirective(CacheDirectiveInfo directive,
       EnumSet<CacheFlag> flags, boolean logRetryCache) throws IOException {
     boolean success = false;
+    final String idStr = "{id: " + directive.getId() + "}";
     if (!flags.contains(CacheFlag.FORCE)) {
       cacheManager.waitForRescanIfNeeded();
     }
@@ -6161,31 +6298,36 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       FSNDNCacheOp.modifyCacheDirective(this, cacheManager, directive, flags,
           logRetryCache);
       success = true;
+    } catch (AccessControlException ace) {
+      logAuditEvent(success, "modifyCacheDirective", idStr,
+          directive.toString(), null);
+      throw ace;
     } finally {
       writeUnlock();
       if (success) {
         getEditLog().logSync();
       }
-      final String idStr = "{id: " + directive.getId() + "}";
-      logAuditEvent(success, "modifyCacheDirective", idStr,
-          directive.toString(), null);
     }
+    logAuditEvent(success, "modifyCacheDirective", idStr,
+        directive.toString(), null);
   }
 
   void removeCacheDirective(long id, boolean logRetryCache) throws IOException {
     boolean success = false;
+    String idStr = "{id: " + Long.toString(id) + "}";
     writeLock();
     try {
       checkOperation(OperationCategory.WRITE);
       checkNameNodeSafeMode("Cannot remove cache directives");
       FSNDNCacheOp.removeCacheDirective(this, cacheManager, id, logRetryCache);
       success = true;
+    } catch (AccessControlException ace) {
+      logAuditEvent(success, "removeCacheDirective", idStr, null, null);
+      throw ace;
     } finally {
       writeUnlock();
-      String idStr = "{id: " + Long.toString(id) + "}";
-      logAuditEvent(success, "removeCacheDirective", idStr, null,
-          null);
     }
+    logAuditEvent(success, "removeCacheDirective", idStr, null, null);
     getEditLog().logSync();
   }
 
@@ -6201,11 +6343,15 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       results = FSNDNCacheOp.listCacheDirectives(this, cacheManager, startId,
           filter);
       success = true;
-    } finally {
-      readUnlock();
+    } catch (AccessControlException ace) {
       logAuditEvent(success, "listCacheDirectives", filter.toString(), null,
           null);
+      throw ace;
+    } finally {
+      readUnlock();
     }
+    logAuditEvent(success, "listCacheDirectives", filter.toString(), null,
+        null);
     return results;
   }
 
@@ -6222,11 +6368,13 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
           logRetryCache);
       poolInfoStr = info.toString();
       success = true;
+    } catch (AccessControlException ace) {
+      logAuditEvent(success, "addCachePool", poolInfoStr, null, null);
+      throw ace;
     } finally {
       writeUnlock();
-      logAuditEvent(success, "addCachePool", poolInfoStr, null, null);
     }
-    
+    logAuditEvent(success, "addCachePool", poolInfoStr, null, null);
     getEditLog().logSync();
   }
 
@@ -6234,19 +6382,23 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       throws IOException {
     writeLock();
     boolean success = false;
+    String poolNameStr = "{poolName: " +
+        (req == null ? null : req.getPoolName()) + "}";
     try {
       checkOperation(OperationCategory.WRITE);
       checkNameNodeSafeMode("Cannot modify cache pool"
           + (req == null ? null : req.getPoolName()));
       FSNDNCacheOp.modifyCachePool(this, cacheManager, req, logRetryCache);
       success = true;
+    } catch (AccessControlException ace) {
+      logAuditEvent(success, "modifyCachePool", poolNameStr,
+          req == null ? null : req.toString(), null);
+      throw ace;
     } finally {
       writeUnlock();
-      String poolNameStr = "{poolName: " +
-          (req == null ? null : req.getPoolName()) + "}";
-      logAuditEvent(success, "modifyCachePool", poolNameStr,
-                    req == null ? null : req.toString(), null);
     }
+    logAuditEvent(success, "modifyCachePool", poolNameStr,
+        req == null ? null : req.toString(), null);
 
     getEditLog().logSync();
   }
@@ -6255,18 +6407,20 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       throws IOException {
     writeLock();
     boolean success = false;
+    String poolNameStr = "{poolName: " + cachePoolName + "}";
     try {
       checkOperation(OperationCategory.WRITE);
       checkNameNodeSafeMode("Cannot modify cache pool" + cachePoolName);
       FSNDNCacheOp.removeCachePool(this, cacheManager, cachePoolName,
           logRetryCache);
       success = true;
+    } catch (AccessControlException ace) {
+      logAuditEvent(success, "removeCachePool", poolNameStr, null, null);
+      throw ace;
     } finally {
       writeUnlock();
-      String poolNameStr = "{poolName: " + cachePoolName + "}";
-      logAuditEvent(success, "removeCachePool", poolNameStr, null, null);
     }
-    
+    logAuditEvent(success, "removeCachePool", poolNameStr, null, null);
     getEditLog().logSync();
   }
 
@@ -6281,10 +6435,13 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       checkOperation(OperationCategory.READ);
       results = FSNDNCacheOp.listCachePools(this, cacheManager, prevKey);
       success = true;
+    } catch (AccessControlException ace) {
+      logAuditEvent(success, "listCachePools", null, null, null);
+      throw ace;
     } finally {
       readUnlock();
-      logAuditEvent(success, "listCachePools", null, null, null);
     }
+    logAuditEvent(success, "listCachePools", null, null, null);
     return results;
   }
 
@@ -6382,17 +6539,19 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
 
   AclStatus getAclStatus(String src) throws IOException {
     checkOperation(OperationCategory.READ);
-    boolean success = false;
+    final AclStatus ret;
     readLock();
     try {
       checkOperation(OperationCategory.READ);
-      final AclStatus ret = FSDirAclOp.getAclStatus(dir, src);
-      success = true;
-      return ret;
+      ret = FSDirAclOp.getAclStatus(dir, src);
+    } catch(AccessControlException ace) {
+      logAuditEvent(false, "getAclStatus", src);
+      throw ace;
     } finally {
       readUnlock();
-      logAuditEvent(success, "getAclStatus", src);
     }
+    logAuditEvent(true, "getAclStatus", src);
+    return ret;
   }
 
   /**
@@ -6447,6 +6606,7 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
     throws AccessControlException, UnresolvedLinkException, IOException {
     HdfsFileStatus resultingStat = null;
     boolean success = false;
+    EncryptionZone encryptionZone;
     final FSPermissionChecker pc = getPermissionChecker();
     checkOperation(OperationCategory.READ);
     readLock();
@@ -6456,11 +6616,15 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
           .getEZForPath(dir, srcArg, pc);
       success = true;
       resultingStat = ezForPath.getValue();
-      return ezForPath.getKey();
+      encryptionZone = ezForPath.getKey();
+    } catch (AccessControlException ace) {
+      logAuditEvent(success, "getEZForPath", srcArg, null, resultingStat);
+      throw ace;
     } finally {
       readUnlock();
-      logAuditEvent(success, "getEZForPath", srcArg, null, resultingStat);
     }
+    logAuditEvent(success, "getEZForPath", srcArg, null, resultingStat);
+    return encryptionZone;
   }
 
   BatchedListEntries<EncryptionZone> listEncryptionZones(long prevId)
@@ -6504,14 +6668,18 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       resultingStat = FSDirErasureCodingOp.setErasureCodingPolicy(this,
           srcArg, ecPolicy, logRetryCache);
       success = true;
+    } catch (AccessControlException ace) {
+      logAuditEvent(success, "setErasureCodingPolicy", srcArg, null,
+          resultingStat);
+      throw ace;
     } finally {
       writeUnlock();
       if (success) {
         getEditLog().logSync();
       }
-      logAuditEvent(success, "setErasureCodingPolicy", srcArg, null,
-          resultingStat);
     }
+    logAuditEvent(success, "setErasureCodingPolicy", srcArg, null,
+        resultingStat);
   }
 
   /**
@@ -6523,7 +6691,7 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
     readLock();
     try {
       checkOperation(OperationCategory.READ);
-      return getErasureCodingPolicyForPath(src);
+      return FSDirErasureCodingOp.getErasureCodingPolicy(this, src);
     } finally {
       readUnlock();
     }
@@ -6565,30 +6733,36 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
   List<XAttr> getXAttrs(final String src, List<XAttr> xAttrs)
       throws IOException {
     checkOperation(OperationCategory.READ);
+    List<XAttr> fsXattrs;
     readLock();
     try {
       checkOperation(OperationCategory.READ);
-      return FSDirXAttrOp.getXAttrs(dir, src, xAttrs);
+      fsXattrs = FSDirXAttrOp.getXAttrs(dir, src, xAttrs);
     } catch (AccessControlException e) {
       logAuditEvent(false, "getXAttrs", src);
       throw e;
     } finally {
       readUnlock();
     }
+    logAuditEvent(true, "getXAttrs", src);
+    return fsXattrs;
   }
 
   List<XAttr> listXAttrs(String src) throws IOException {
     checkOperation(OperationCategory.READ);
+    List<XAttr> fsXattrs;
     readLock();
     try {
       checkOperation(OperationCategory.READ);
-      return FSDirXAttrOp.listXAttrs(dir, src);
+      fsXattrs = FSDirXAttrOp.listXAttrs(dir, src);
     } catch (AccessControlException e) {
       logAuditEvent(false, "listXAttrs", src);
       throw e;
     } finally {
       readUnlock();
     }
+    logAuditEvent(true, "listXAttrs", src);
+    return fsXattrs;
   }
 
   void removeXAttr(String src, XAttr xAttr, boolean logRetryCache)
@@ -6785,12 +6959,6 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
     } else {
       return "";
     }
-  }
-
-  @Override
-  public ErasureCodingPolicy getErasureCodingPolicyForPath(String src)
-      throws IOException {
-    return FSDirErasureCodingOp.getErasureCodingPolicy(this, src);
   }
 
   /**

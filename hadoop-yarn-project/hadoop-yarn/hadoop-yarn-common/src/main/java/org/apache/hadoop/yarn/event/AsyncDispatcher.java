@@ -50,6 +50,7 @@ public class AsyncDispatcher extends AbstractService implements Dispatcher {
   private static final Log LOG = LogFactory.getLog(AsyncDispatcher.class);
 
   private final BlockingQueue<Event> eventQueue;
+  private volatile int lastEventQueueSizeLogged = 0;
   private volatile boolean stopped = false;
 
   // Configuration flag for enabling/disabling draining dispatcher's events on
@@ -59,7 +60,7 @@ public class AsyncDispatcher extends AbstractService implements Dispatcher {
   // Indicates all the remaining dispatcher's events on stop have been drained
   // and processed.
   private volatile boolean drained = true;
-  private Object waitForDrained = new Object();
+  private final Object waitForDrained = new Object();
 
   // For drainEventsOnStop enabled only, block newly coming events into the
   // queue while stopping.
@@ -236,7 +237,9 @@ public class AsyncDispatcher extends AbstractService implements Dispatcher {
 
       /* all this method does is enqueue all the events onto the queue */
       int qSize = eventQueue.size();
-      if (qSize !=0 && qSize %1000 == 0) {
+      if (qSize != 0 && qSize % 1000 == 0
+          && lastEventQueueSizeLogged != qSize) {
+        lastEventQueueSizeLogged = qSize;
         LOG.info("Size of event-queue is " + qSize);
       }
       int remCapacity = eventQueue.remainingCapacity();

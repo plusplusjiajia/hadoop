@@ -99,12 +99,12 @@ public class FiCaSchedulerApp extends SchedulerApplicationAttempt {
       String user, Queue queue, ActiveUsersManager activeUsersManager,
       RMContext rmContext) {
     this(applicationAttemptId, user, queue, activeUsersManager, rmContext,
-        Priority.newInstance(0));
+        Priority.newInstance(0), false);
   }
 
   public FiCaSchedulerApp(ApplicationAttemptId applicationAttemptId,
       String user, Queue queue, ActiveUsersManager activeUsersManager,
-      RMContext rmContext, Priority appPriority) {
+      RMContext rmContext, Priority appPriority, boolean isAttemptRecovering) {
     super(applicationAttemptId, user, queue, activeUsersManager, rmContext);
     
     RMApp rmApp = rmContext.getRMApps().get(getApplicationId());
@@ -129,6 +129,7 @@ public class FiCaSchedulerApp extends SchedulerApplicationAttempt {
     setAppAMNodePartitionName(partition);
     setAMResource(partition, amResource);
     setPriority(appPriority);
+    setAttemptRecovering(isAttemptRecovering);
 
     scheduler = rmContext.getScheduler();
 
@@ -300,7 +301,7 @@ public class FiCaSchedulerApp extends SchedulerApplicationAttempt {
     return ret;
   }
 
-  public synchronized void addPreemptContainer(ContainerId cont) {
+  public synchronized void markContainerForPreemption(ContainerId cont) {
     // ignore already completed containers
     if (liveContainers.containsKey(cont)) {
       containersToPreempt.add(cont);
@@ -588,7 +589,7 @@ public class FiCaSchedulerApp extends SchedulerApplicationAttempt {
       diagnosticMessageBldr.append(", Total resource : ");
       diagnosticMessageBldr.append(node.getTotalResource());
       diagnosticMessageBldr.append(", Available resource : ");
-      diagnosticMessageBldr.append(node.getAvailableResource());
+      diagnosticMessageBldr.append(node.getUnallocatedResource());
       diagnosticMessageBldr.append(" ).");
       updateAMContainerDiagnostics(AMState.ACTIVATED, diagnosticMessageBldr.toString());
     }

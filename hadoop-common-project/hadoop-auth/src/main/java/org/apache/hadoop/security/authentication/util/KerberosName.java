@@ -26,6 +26,7 @@ import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import com.google.common.annotations.VisibleForTesting;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.slf4j.Logger;
@@ -88,6 +89,16 @@ public class KerberosName {
     } catch (Exception ke) {
         LOG.debug("Kerberos krb5 configuration not found, setting default realm to empty");
         defaultRealm="";
+    }
+  }
+
+  @VisibleForTesting
+  public static void resetDefaultRealm() {
+    try {
+      defaultRealm = KerberosUtil.getDefaultRealm();
+    } catch (Exception ke) {
+      LOG.debug("resetting default realm failed, "
+          + "current default realm will still be used.", ke);
     }
   }
 
@@ -424,16 +435,16 @@ public class KerberosName {
     }
     return ruleString;
   }
-  
+
   /**
    * Indicates if the name rules have been set.
-   * 
+   *
    * @return if the name rules have been set.
    */
   public static boolean hasRulesBeenSet() {
     return rules != null;
   }
-  
+
   static void printRules() throws IOException {
     int i = 0;
     for(Rule r: rules) {

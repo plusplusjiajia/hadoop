@@ -211,6 +211,54 @@
     }).error(network_error_handler(url));
   }
 
+  /**Use X-editable to make fields editable with a nice UI.
+   * elementType is the class of element(s) you want to make editable
+   * op is the WebHDFS operation that will be triggered
+   * parameter is (currently the 1) parameter which will be passed along with
+   *   the value entered by the user
+   */
+  function makeEditable(elementType, op, parameter) {
+    $(elementType).each(function(index, value) {
+      $(this).editable({
+        url: function(params) {
+          var inode_name = $(this).closest('tr').attr('inode-path');
+          var absolute_file_path = append_path(current_directory, inode_name);
+          var url = '/webhdfs/v1' + encode_path(absolute_file_path) + '?op=' +
+            op + '&' + parameter + '=' + encodeURIComponent(params.value);
+
+          return $.ajax(url, { type: 'PUT', })
+            .error(network_error_handler(url))
+            .success(function() {
+                browse_directory(current_directory);
+             });
+        },
+        error: function(response, newValue) {return "";}
+      });
+    });
+  }
+
+  function func_size_render(data, type, row, meta) {
+    if(type == 'display') {
+      return dust.filters.fmt_bytes(data);
+    }
+    else return data;
+  }
+
+  // Change the format of date-time depending on how old the
+  // the timestamp is. If older than 6 months, no need to be
+  // show exact time.
+  function func_time_render(data, type, row, meta) {
+    if(type == 'display') {
+      var cutoff = moment().subtract(6, 'months').unix() * 1000;
+      if(data < cutoff) {
+        return moment(Number(data)).format('MMM DD YYYY');
+      } else {
+        return moment(Number(data)).format('MMM DD HH:mm');
+      }
+    }
+    return data;
+  }
+
   function browse_directory(dir) {
     var HELPERS = {
       'helper_date_tostring' : function (chunk, ctx, bodies, params) {
@@ -233,6 +281,22 @@
       dust.render('explorer', base.push(d), function(err, out) {
         $('#panel').html(out);
 
+        $('#table-explorer').dataTable( {
+          'lengthMenu': [ [25, 50, 100, -1], [25, 50, 100, "All"] ],
+          'columns': [
+            {'searchable': false }, //Permissions
+            null, //Owner
+            null, //Group
+            { 'searchable': false, 'render': func_size_render}, //Size
+            { 'searchable': false, 'render': func_time_render}, //Last Modified
+            { 'searchable': false }, //Replication
+            null, //Block Size
+            null, //Name
+            { 'sortable' : false } //Trash
+          ],
+          "deferRender": true
+        });
+
         $('.explorer-browse-links').click(function() {
           var type = $(this).attr('inode-type');
           var path = $(this).closest('tr').attr('inode-path');
@@ -251,6 +315,10 @@
           var perms = $(this).closest('tr').attr('data-permission');
           view_perm_details($(this), filename, abs_path, perms);
         });
+
+        makeEditable('.explorer-owner-links', 'SETOWNER', 'owner');
+        makeEditable('.explorer-group-links', 'SETOWNER', 'group');
+        makeEditable('.explorer-replication-links', 'SETREPLICATION', 'replication');
 
         $('.explorer-entry .glyphicon-trash').click(function() {
           var inode_name = $(this).closest('tr').attr('inode-path');

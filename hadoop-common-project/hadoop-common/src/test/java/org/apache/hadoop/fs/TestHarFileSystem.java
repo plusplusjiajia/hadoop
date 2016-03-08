@@ -112,6 +112,7 @@ public class TestHarFileSystem {
     public short getReplication(Path src);
     public void processDeleteOnExit();
     public ContentSummary getContentSummary(Path f);
+    public QuotaUsage getQuotaUsage(Path f);
     public FsStatus getStatus();
     public FileStatus[] listStatus(Path f, PathFilter filter);
     public FileStatus[] listStatus(Path[] files);
@@ -208,6 +209,8 @@ public class TestHarFileSystem {
 
     public void setStoragePolicy(Path src, String policyName)
         throws IOException;
+
+    public void unsetStoragePolicy(Path src) throws IOException;
 
     public BlockStoragePolicySpi getStoragePolicy(final Path src)
         throws IOException;

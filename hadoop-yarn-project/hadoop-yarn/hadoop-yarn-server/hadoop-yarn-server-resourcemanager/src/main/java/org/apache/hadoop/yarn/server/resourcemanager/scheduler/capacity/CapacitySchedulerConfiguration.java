@@ -30,6 +30,7 @@ import java.util.Map.Entry;
 import java.util.Set;
 import java.util.StringTokenizer;
 
+import com.google.common.annotations.VisibleForTesting;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
@@ -39,6 +40,7 @@ import org.apache.hadoop.util.ReflectionUtils;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.yarn.api.records.QueueACL;
 import org.apache.hadoop.yarn.api.records.QueueState;
+import org.apache.hadoop.yarn.api.records.ReservationACL;
 import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.nodelabels.CommonNodeLabelsManager;
@@ -565,6 +567,35 @@ public class CapacitySchedulerConfiguration extends ReservationSchedulerConfigur
     set(queuePrefix + getAclKey(acl), aclString);
   }
 
+  private static String getAclKey(ReservationACL acl) {
+    return "acl_" + StringUtils.toLowerCase(acl.toString());
+  }
+
+  @Override
+  public Map<ReservationACL, AccessControlList> getReservationAcls(String
+        queue) {
+    Map<ReservationACL, AccessControlList> resAcls = new HashMap<>();
+    for (ReservationACL acl : ReservationACL.values()) {
+      resAcls.put(acl, getReservationAcl(queue, acl));
+    }
+    return resAcls;
+  }
+
+  private AccessControlList getReservationAcl(String queue, ReservationACL
+        acl) {
+    String queuePrefix = getQueuePrefix(queue);
+    // The root queue defaults to all access if not defined
+    // Sub queues inherit access if not defined
+    String defaultAcl = ALL_ACL;
+    String aclString = get(queuePrefix + getAclKey(acl), defaultAcl);
+    return new AccessControlList(aclString);
+  }
+
+  private void setAcl(String queue, ReservationACL acl, String aclString) {
+    String queuePrefix = getQueuePrefix(queue);
+    set(queuePrefix + getAclKey(acl), aclString);
+  }
+
   public Map<AccessType, AccessControlList> getAcls(String queue) {
     Map<AccessType, AccessControlList> acls =
       new HashMap<AccessType, AccessControlList>();
@@ -576,6 +607,14 @@ public class CapacitySchedulerConfiguration extends ReservationSchedulerConfigur
 
   public void setAcls(String queue, Map<QueueACL, AccessControlList> acls) {
     for (Map.Entry<QueueACL, AccessControlList> e : acls.entrySet()) {
+      setAcl(queue, e.getKey(), e.getValue().getAclString());
+    }
+  }
+
+  @VisibleForTesting
+  public void setReservationAcls(String queue,
+        Map<ReservationACL, AccessControlList> acls) {
+    for (Map.Entry<ReservationACL, AccessControlList> e : acls.entrySet()) {
       setAcl(queue, e.getKey(), e.getValue().getAclString());
     }
   }
@@ -958,5 +997,17 @@ public class CapacitySchedulerConfiguration extends ReservationSchedulerConfigur
         + DEFAULT_APPLICATION_PRIORITY,
         DEFAULT_CONFIGURATION_APPLICATION_PRIORITY);
     return defaultPriority;
+  }
+
+  @VisibleForTesting
+  public void setOrderingPolicy(String queue, String policy) {
+    set(getQueuePrefix(queue) + ORDERING_POLICY, policy);
+  }
+
+  @VisibleForTesting
+  public void setOrderingPolicyParameter(String queue,
+      String parameterKey, String parameterValue) {
+    set(getQueuePrefix(queue) + ORDERING_POLICY + "."
+        + parameterKey, parameterValue);
   }
 }

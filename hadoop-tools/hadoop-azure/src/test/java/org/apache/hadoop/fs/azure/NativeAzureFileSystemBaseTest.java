@@ -846,6 +846,130 @@ public abstract class NativeAzureFileSystemBaseTest {
   }
 
   /**
+   * There is a nested folder and file under the folder to be renamed
+   * and the process crashes after the nested folder has been renamed but not the file.
+   * then when you list the parent folder, pending renames should be redone
+   * Apache jira HADOOP-12780
+   */
+  @Test
+  public void testRedoRenameFolderRenameInProgress() throws IOException {
+
+    // create original folder
+    String parent = "parent";
+    Path parentFolder = new Path(parent);
+    assertTrue(fs.mkdirs(parentFolder));
+    Path folderToBeRenamed = new Path(parentFolder, "folderToBeRenamed");
+    assertTrue(fs.mkdirs(folderToBeRenamed));
+    String innerFolderName = "innerFolder";
+    Path inner = new Path(folderToBeRenamed, innerFolderName);
+    assertTrue(fs.mkdirs(inner));
+    String innerFileName = "file";
+    Path innerFile = new Path(inner, innerFileName);
+    assertTrue(fs.createNewFile(innerFile));
+
+    Path renamedFolder = new Path(parentFolder, "renamedFolder");
+
+    // propose (but don't do) the rename of innerFolder2
+    Path home = fs.getHomeDirectory();
+    String relativeHomeDir = getRelativePath(home.toString());
+    NativeAzureFileSystem.FolderRenamePending pending =
+        new NativeAzureFileSystem.FolderRenamePending(
+            relativeHomeDir + "/" + folderToBeRenamed,
+            relativeHomeDir + "/" + renamedFolder, null,
+            (NativeAzureFileSystem) fs);
+
+    // Create a rename-pending file and write rename information to it.
+    final String renamePendingStr = folderToBeRenamed + FolderRenamePending.SUFFIX;
+    Path renamePendingFile = new Path(renamePendingStr);
+    FSDataOutputStream out = fs.create(renamePendingFile, true);
+    assertTrue(out != null);
+    writeString(out, pending.makeRenamePendingFileContents());
+
+    // Rename inner folder to simulate the scenario where rename has started and
+    // only one directory has been renamed but not the files under it
+    ((NativeAzureFileSystem) fs).getStoreInterface().rename(
+        relativeHomeDir + "/" +inner, relativeHomeDir + "/" +renamedFolder + "/" + innerFolderName , true, null);
+
+    // Instead of using fs.exist use store.explicitFileExists because fs.exist will return true
+    // even if directory has been renamed, but there are still file under that directory
+    assertFalse(((NativeAzureFileSystem) fs).getStoreInterface().
+        explicitFileExists(relativeHomeDir + "/" + inner)); // verify the explicit inner folder is gone
+    assertTrue(((NativeAzureFileSystem) fs).getStoreInterface().
+        explicitFileExists(relativeHomeDir + "/" + innerFile)); // verify inner file is present
+
+    // Redo the rename operation based on the contents of the
+    // -RenamePending.json file. Trigger the redo by checking for existence of
+    // the original folder. It must appear to not exist.
+    FileStatus[] listed = fs.listStatus(parentFolder);
+    assertEquals(1, listed.length);
+    assertTrue(listed[0].isDirectory());
+
+    // The rename pending file is not a directory, so at this point we know the
+    // redo has been done.
+    assertFalse(fs.exists(inner)); // verify original folder is gone
+    assertFalse(fs.exists(innerFile)); // verify original file is gone
+    assertTrue(fs.exists(renamedFolder)); // verify the target is there
+    assertTrue(fs.exists(new Path(renamedFolder, innerFolderName + "/" + innerFileName)));
+  }
+
+  /**
+   * Test the situation when the rename metadata file is empty
+   * i.e. it is created but not written yet. In that case in next rename
+   * this empty file should be deleted. As zero byte metadata file means
+   * rename has not started yet. This is to emulate the scenario where
+   * the process crashes just after creating rename metadata file.
+   *  We had a bug (HADOOP-12678) that in that case listing used to fail and
+   * hbase master did not use to come up
+   */
+  @Test
+  public void testRedoRenameFolderInFolderListingWithZeroByteRenameMetadata()
+      throws IOException {
+    // create original folder
+    String parent = "parent";
+    Path parentFolder = new Path(parent);
+    assertTrue(fs.mkdirs(parentFolder));
+    Path inner = new Path(parentFolder, "innerFolder");
+    assertTrue(fs.mkdirs(inner));
+    Path inner2 = new Path(parentFolder, "innerFolder2");
+    assertTrue(fs.mkdirs(inner2));
+    Path innerFile = new Path(inner2, "file");
+    assertTrue(fs.createNewFile(innerFile));
+
+    Path inner2renamed = new Path(parentFolder, "innerFolder2Renamed");
+
+    // Create an empty rename-pending file
+    final String renamePendingStr = inner2 + FolderRenamePending.SUFFIX;
+    Path renamePendingFile = new Path(renamePendingStr);
+    FSDataOutputStream out = fs.create(renamePendingFile, true);
+    assertTrue(out != null);
+    out.close();
+
+    // Redo the rename operation based on the contents of the
+    // -RenamePending.json file. Trigger the redo by listing
+    // the parent folder. It should not throw and it should
+    // delete empty rename pending file
+    FileStatus[] listed = fs.listStatus(parentFolder);
+    assertEquals(2, listed.length);
+    assertTrue(listed[0].isDirectory());
+    assertTrue(listed[1].isDirectory());
+    assertFalse(fs.exists(renamePendingFile));
+
+    // Verify that even if rename pending file is deleted,
+    // deletion should handle that
+    Path home = fs.getHomeDirectory();
+    String relativeHomeDir = getRelativePath(home.toString());
+    NativeAzureFileSystem.FolderRenamePending pending =
+            new NativeAzureFileSystem.FolderRenamePending(
+                relativeHomeDir + "/" + inner2,
+                relativeHomeDir + "/" + inner2renamed, null,
+                (NativeAzureFileSystem) fs);
+    pending.deleteRenamePendingFile(fs, renamePendingFile);
+
+    assertTrue(fs.exists(inner2)); // verify original folder is there
+    assertFalse(fs.exists(inner2renamed)); // verify the target is not there
+  }
+
+  /**
    * Test the situation where a rename pending file exists but the rename
    * is really done. This could happen if the rename process died just
    * before deleting the rename pending file. It exercises a non-standard

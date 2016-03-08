@@ -228,8 +228,9 @@ public class ApplicationHistoryServer extends CompositeService {
   }
 
   private TimelineDataManager createTimelineDataManager(Configuration conf) {
-    return new TimelineDataManager(
-        timelineStore, new TimelineACLsManager(conf));
+    TimelineACLsManager aclsMgr = new TimelineACLsManager(conf);
+    aclsMgr.setTimelineStore(timelineStore);
+    return new TimelineDataManager(timelineStore, aclsMgr);
   }
 
   @SuppressWarnings("unchecked")
@@ -296,16 +297,21 @@ public class ApplicationHistoryServer extends CompositeService {
                           YarnConfiguration.TIMELINE_SERVICE_BIND_HOST,
                           WebAppUtils.getAHSWebAppURLWithoutScheme(conf));
     try {
-      AHSWebApp ahsWebApp = new AHSWebApp(timelineDataManager, ahsClientService);
+      AHSWebApp ahsWebApp =
+          new AHSWebApp(timelineDataManager, ahsClientService);
       webApp =
           WebApps
             .$for("applicationhistory", ApplicationHistoryClientService.class,
                 ahsClientService, "ws")
-             .with(conf).withAttribute(YarnConfiguration.TIMELINE_SERVICE_WEBAPP_ADDRESS,
-                 conf.get(YarnConfiguration.TIMELINE_SERVICE_WEBAPP_ADDRESS)).at(bindAddress).build(ahsWebApp);
+             .with(conf)
+              .withAttribute(YarnConfiguration.TIMELINE_SERVICE_WEBAPP_ADDRESS,
+                 conf.get(YarnConfiguration.TIMELINE_SERVICE_WEBAPP_ADDRESS))
+              .withCSRFProtection(YarnConfiguration.TIMELINE_CSRF_PREFIX)
+              .at(bindAddress).build(ahsWebApp);
        HttpServer2 httpServer = webApp.httpServer();
 
-       String[] names = conf.getTrimmedStrings(YarnConfiguration.TIMELINE_SERVICE_UI_NAMES);
+       String[] names = conf.getTrimmedStrings(
+           YarnConfiguration.TIMELINE_SERVICE_UI_NAMES);
        WebAppContext webAppContext = httpServer.getWebAppContext();
 
        for (String name : names) {
@@ -331,9 +337,9 @@ public class ApplicationHistoryServer extends CompositeService {
        }
        httpServer.start();
        conf.updateConnectAddr(YarnConfiguration.TIMELINE_SERVICE_BIND_HOST,
-         YarnConfiguration.TIMELINE_SERVICE_WEBAPP_ADDRESS,
-         YarnConfiguration.DEFAULT_TIMELINE_SERVICE_WEBAPP_ADDRESS,
-         this.getListenerAddress());
+        YarnConfiguration.TIMELINE_SERVICE_WEBAPP_ADDRESS,
+        YarnConfiguration.DEFAULT_TIMELINE_SERVICE_WEBAPP_ADDRESS,
+        this.getListenerAddress());
        LOG.info("Instantiating AHSWebApp at " + getPort());
     } catch (Exception e) {
       String msg = "AHSWebApp failed to start.";

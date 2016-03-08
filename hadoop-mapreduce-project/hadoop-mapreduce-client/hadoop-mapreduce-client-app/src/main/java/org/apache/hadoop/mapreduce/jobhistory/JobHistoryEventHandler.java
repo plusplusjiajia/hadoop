@@ -23,6 +23,7 @@ import java.util.Collections;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.Timer;
 import java.util.TimerTask;
@@ -63,6 +64,7 @@ import org.apache.hadoop.service.AbstractService;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.yarn.api.records.timeline.TimelineEntity;
 import org.apache.hadoop.yarn.api.records.timeline.TimelineEvent;
+import org.apache.hadoop.yarn.api.records.timeline.TimelinePutResponse;
 import org.apache.hadoop.yarn.client.api.TimelineClient;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.event.EventHandler;
@@ -71,6 +73,7 @@ import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
 import org.codehaus.jackson.JsonNode;
 import org.codehaus.jackson.map.ObjectMapper;
 import org.codehaus.jackson.node.ArrayNode;
+import org.codehaus.jackson.node.JsonNodeFactory;
 import org.codehaus.jackson.node.ObjectNode;
 
 import com.google.common.annotations.VisibleForTesting;
@@ -82,6 +85,8 @@ import com.google.common.annotations.VisibleForTesting;
  */
 public class JobHistoryEventHandler extends AbstractService
     implements EventHandler<JobHistoryEvent> {
+  private static final JsonNodeFactory FACTORY =
+      new ObjectMapper().getNodeFactory();
 
   private final AppContext context;
   private final int startCount;
@@ -1012,7 +1017,21 @@ public class JobHistoryEventHandler extends AbstractService
     }
 
     try {
-      timelineClient.putEntities(tEntity);
+      TimelinePutResponse response = timelineClient.putEntities(tEntity);
+      List<TimelinePutResponse.TimelinePutError> errors = response.getErrors();
+      if (errors.size() == 0) {
+        if (LOG.isDebugEnabled()) {
+          LOG.debug("Timeline entities are successfully put in event " + event
+              .getEventType());
+        }
+      } else {
+        for (TimelinePutResponse.TimelinePutError error : errors) {
+          LOG.error(
+              "Error when publishing entity [" + error.getEntityType() + ","
+                  + error.getEntityId() + "], server side error code: "
+                  + error.getErrorCode());
+        }
+      }
     } catch (IOException ex) {
       LOG.error("Error putting entity " + tEntity.getEntityId() + " to Timeline"
       + "Server", ex);
@@ -1024,8 +1043,7 @@ public class JobHistoryEventHandler extends AbstractService
 
   @Private
   public JsonNode countersToJSON(Counters counters) {
-    ObjectMapper mapper = new ObjectMapper();
-    ArrayNode nodes = mapper.createArrayNode();
+    ArrayNode nodes = FACTORY.arrayNode();
     if (counters != null) {
       for (CounterGroup counterGroup : counters) {
         ObjectNode groupNode = nodes.addObject();

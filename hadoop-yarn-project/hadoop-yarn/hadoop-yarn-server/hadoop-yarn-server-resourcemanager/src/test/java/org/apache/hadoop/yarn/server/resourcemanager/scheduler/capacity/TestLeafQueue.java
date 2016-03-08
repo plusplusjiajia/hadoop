@@ -263,18 +263,18 @@ public class TestLeafQueue {
     assertEquals(0.1, c.getMaximumCapacity(), epsilon);
     assertEquals(0.1, c.getAbsoluteMaximumCapacity(), epsilon);
 
-	  //Verify the value for getAMResourceLimit for queues with < .1 maxcap
-	  Resource clusterResource = Resource.newInstance(50 * GB, 50);
-	  
+    // Verify the value for getAMResourceLimit for queues with < .1 maxcap
+    Resource clusterResource = Resource.newInstance(50 * GB, 50);
+
     a.updateClusterResource(clusterResource,
         new ResourceLimits(clusterResource));
-	  assertEquals(Resource.newInstance(1 * GB, 1), 
-	    a.getAMResourceLimit());
-    
-	  b.updateClusterResource(clusterResource,
+    assertEquals(Resource.newInstance(1 * GB, 1),
+        a.calculateAndGetAMResourceLimit());
+
+    b.updateClusterResource(clusterResource,
         new ResourceLimits(clusterResource));
-	  assertEquals(Resource.newInstance(5 * GB, 1), 
-	    b.getAMResourceLimit());
+    assertEquals(Resource.newInstance(5 * GB, 1),
+        b.calculateAndGetAMResourceLimit());
   }
  
   @Test
@@ -1311,7 +1311,7 @@ public class TestLeafQueue {
     assertEquals(2*GB, app_0.getCurrentConsumption().getMemory());
     assertEquals(0*GB, app_1.getCurrentConsumption().getMemory());
     assertEquals(4*GB, app_1.getCurrentReservation().getMemory());
-    assertEquals(2*GB, node_0.getUsedResource().getMemory());
+    assertEquals(2*GB, node_0.getAllocatedResource().getMemory());
     assertEquals(4*GB, a.getMetrics().getReservedMB());
     assertEquals(2*GB, a.getMetrics().getAllocatedMB());
     
@@ -1328,7 +1328,7 @@ public class TestLeafQueue {
     assertEquals(1*GB, app_0.getCurrentConsumption().getMemory());
     assertEquals(0*GB, app_1.getCurrentConsumption().getMemory());
     assertEquals(4*GB, app_1.getCurrentReservation().getMemory());
-    assertEquals(1*GB, node_0.getUsedResource().getMemory());
+    assertEquals(1*GB, node_0.getAllocatedResource().getMemory());
     assertEquals(4*GB, a.getMetrics().getReservedMB());
     assertEquals(1*GB, a.getMetrics().getAllocatedMB());
 
@@ -1345,7 +1345,7 @@ public class TestLeafQueue {
     assertEquals(0*GB, app_0.getCurrentConsumption().getMemory());
     assertEquals(4*GB, app_1.getCurrentConsumption().getMemory());
     assertEquals(0*GB, app_1.getCurrentReservation().getMemory());
-    assertEquals(4*GB, node_0.getUsedResource().getMemory());
+    assertEquals(4*GB, node_0.getAllocatedResource().getMemory());
     assertEquals(0*GB, a.getMetrics().getReservedMB());
     assertEquals(4*GB, a.getMetrics().getAllocatedMB());
   }
@@ -1434,7 +1434,7 @@ public class TestLeafQueue {
     assertEquals(2*GB, app_0.getCurrentConsumption().getMemory());
     assertEquals(0*GB, app_1.getCurrentConsumption().getMemory());
     assertEquals(4*GB, app_1.getCurrentReservation().getMemory());
-    assertEquals(2*GB, node_0.getUsedResource().getMemory());
+    assertEquals(2*GB, node_0.getAllocatedResource().getMemory());
     
     // Now free 1 container from app_0 i.e. 1G, and re-reserve it
     RMContainer rmContainer = app_0.getLiveContainers().iterator().next();
@@ -1449,7 +1449,7 @@ public class TestLeafQueue {
     assertEquals(1*GB, app_0.getCurrentConsumption().getMemory());
     assertEquals(0*GB, app_1.getCurrentConsumption().getMemory());
     assertEquals(4*GB, app_1.getCurrentReservation().getMemory());
-    assertEquals(1*GB, node_0.getUsedResource().getMemory());
+    assertEquals(1*GB, node_0.getAllocatedResource().getMemory());
     assertEquals(1, app_1.getReReservations(priority));
 
     // Re-reserve
@@ -1459,7 +1459,7 @@ public class TestLeafQueue {
     assertEquals(1*GB, app_0.getCurrentConsumption().getMemory());
     assertEquals(0*GB, app_1.getCurrentConsumption().getMemory());
     assertEquals(4*GB, app_1.getCurrentReservation().getMemory());
-    assertEquals(1*GB, node_0.getUsedResource().getMemory());
+    assertEquals(1*GB, node_0.getAllocatedResource().getMemory());
     assertEquals(2, app_1.getReReservations(priority));
     
     // Try to schedule on node_1 now, should *move* the reservation
@@ -1469,7 +1469,7 @@ public class TestLeafQueue {
     assertEquals(1*GB, app_0.getCurrentConsumption().getMemory());
     assertEquals(4*GB, app_1.getCurrentConsumption().getMemory());
     assertEquals(4*GB, app_1.getCurrentReservation().getMemory());
-    assertEquals(4*GB, node_1.getUsedResource().getMemory());
+    assertEquals(4*GB, node_1.getAllocatedResource().getMemory());
     // Doesn't change yet... only when reservation is cancelled or a different
     // container is reserved
     assertEquals(2, app_1.getReReservations(priority)); 
@@ -1487,7 +1487,7 @@ public class TestLeafQueue {
     assertEquals(0*GB, app_0.getCurrentConsumption().getMemory());
     assertEquals(4*GB, app_1.getCurrentConsumption().getMemory());
     assertEquals(0*GB, app_1.getCurrentReservation().getMemory());
-    assertEquals(0*GB, node_0.getUsedResource().getMemory());
+    assertEquals(0*GB, node_0.getAllocatedResource().getMemory());
   }
   
   private void verifyContainerAllocated(CSAssignment assignment, NodeType nodeType) {
@@ -2323,21 +2323,24 @@ public class TestLeafQueue {
     csConf.setCapacity(CapacitySchedulerConfiguration.ROOT + "." + A, 80);
     LeafQueue a = new LeafQueue(csContext, A, root, null);
     assertEquals(0.1f, a.getMaxAMResourcePerQueuePercent(), 1e-3f);
-    assertEquals(a.getAMResourceLimit(), Resources.createResource(160 * GB, 1));
+    assertEquals(a.calculateAndGetAMResourceLimit(),
+        Resources.createResource(160 * GB, 1));
     
     csConf.setFloat(CapacitySchedulerConfiguration.
         MAXIMUM_APPLICATION_MASTERS_RESOURCE_PERCENT, 0.2f);
     LeafQueue newA = new LeafQueue(csContext, A, root, null);
     a.reinitialize(newA, clusterResource);
     assertEquals(0.2f, a.getMaxAMResourcePerQueuePercent(), 1e-3f);
-    assertEquals(a.getAMResourceLimit(), Resources.createResource(320 * GB, 1));
+    assertEquals(a.calculateAndGetAMResourceLimit(),
+        Resources.createResource(320 * GB, 1));
 
     Resource newClusterResource = Resources.createResource(100 * 20 * GB,
         100 * 32);
     a.updateClusterResource(newClusterResource, 
         new ResourceLimits(newClusterResource));
     //  100 * 20 * 0.2 = 400
-    assertEquals(a.getAMResourceLimit(), Resources.createResource(400 * GB, 1));
+    assertEquals(a.calculateAndGetAMResourceLimit(),
+        Resources.createResource(400 * GB, 1));
   }
   
   @Test
@@ -2396,7 +2399,6 @@ public class TestLeafQueue {
     LeafQueue a = stubLeafQueue((LeafQueue)queues.get(A));
     
     a.setOrderingPolicy(new FifoOrderingPolicy<FiCaSchedulerApp>());
-    a.setPendingAppsOrderingPolicy(new FifoOrderingPolicy<FiCaSchedulerApp>());
 
     String host_0_0 = "127.0.0.1";
     String rack_0 = "rack_0";
@@ -2413,14 +2415,16 @@ public class TestLeafQueue {
         TestUtils.getMockApplicationAttemptId(0, 0); 
     FiCaSchedulerApp app_0 = 
         spy(new FiCaSchedulerApp(appAttemptId_0, user_0, a, 
-            mock(ActiveUsersManager.class), spyRMContext, Priority.newInstance(3)));
+            mock(ActiveUsersManager.class), spyRMContext,
+            Priority.newInstance(3), false));
     a.submitApplicationAttempt(app_0, user_0);
     
     final ApplicationAttemptId appAttemptId_1 = 
         TestUtils.getMockApplicationAttemptId(1, 0); 
     FiCaSchedulerApp app_1 = 
         spy(new FiCaSchedulerApp(appAttemptId_1, user_0, a, 
-            mock(ActiveUsersManager.class), spyRMContext, Priority.newInstance(5)));
+            mock(ActiveUsersManager.class), spyRMContext,
+            Priority.newInstance(5), false));
     a.submitApplicationAttempt(app_1, user_0);
  
     Priority priority = TestUtils.createMockPriority(1);
@@ -2544,7 +2548,6 @@ public class TestLeafQueue {
       new FairOrderingPolicy<FiCaSchedulerApp>();
 
     a.setOrderingPolicy(schedulingOrder);
-    a.setPendingAppsOrderingPolicy(new FairOrderingPolicy<FiCaSchedulerApp>());
 
     String host_0_0 = "127.0.0.1";
     String rack_0 = "rack_0";

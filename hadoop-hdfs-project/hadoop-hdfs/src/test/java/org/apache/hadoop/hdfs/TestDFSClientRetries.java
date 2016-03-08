@@ -52,6 +52,7 @@ import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.crypto.CryptoProtocolVersion;
+import org.apache.hadoop.fs.ChecksumException;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.fs.CreateFlag;
 import org.apache.hadoop.fs.FSDataInputStream;
@@ -62,8 +63,8 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
-import org.apache.hadoop.hdfs.client.impl.LeaseRenewer;
 import org.apache.hadoop.hdfs.client.HdfsUtils;
+import org.apache.hadoop.hdfs.client.impl.LeaseRenewer;
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.ClientDatanodeProtocol;
 import org.apache.hadoop.hdfs.protocol.DatanodeID;
@@ -432,19 +433,37 @@ public class TestDFSClientRetries {
       // Make the call to addBlock() get called twice, as if it were retried
       // due to an IPC issue.
       doAnswer(new Answer<LocatedBlock>() {
+        private int getBlockCount(LocatedBlock ret) throws IOException {
+          LocatedBlocks lb = cluster.getNameNodeRpc().getBlockLocations(src, 0, Long.MAX_VALUE);
+          assertEquals(lb.getLastLocatedBlock().getBlock(), ret.getBlock());
+          return lb.getLocatedBlocks().size();
+        }
+
         @Override
         public LocatedBlock answer(InvocationOnMock invocation) throws Throwable {
-          LocatedBlock ret = (LocatedBlock) invocation.callRealMethod();
-          LocatedBlocks lb = cluster.getNameNodeRpc().getBlockLocations(src, 0, Long.MAX_VALUE);
-          int blockCount = lb.getLocatedBlocks().size();
-          assertEquals(lb.getLastLocatedBlock().getBlock(), ret.getBlock());
-          
+          LOG.info("Called addBlock: "
+              + Arrays.toString(invocation.getArguments()));
+
+          // call first time
+          // warp NotReplicatedYetException with RemoteException as rpc does.
+          final LocatedBlock ret;
+          try {
+            ret = (LocatedBlock) invocation.callRealMethod();
+          } catch(NotReplicatedYetException e) {
+            throw new RemoteException(e.getClass().getName(), e.getMessage());
+          }
+          final int blockCount = getBlockCount(ret);
+
           // Retrying should result in a new block at the end of the file.
           // (abandoning the old one)
-          LocatedBlock ret2 = (LocatedBlock) invocation.callRealMethod();
-          lb = cluster.getNameNodeRpc().getBlockLocations(src, 0, Long.MAX_VALUE);
-          int blockCount2 = lb.getLocatedBlocks().size();
-          assertEquals(lb.getLastLocatedBlock().getBlock(), ret2.getBlock());
+          // It should not have NotReplicatedYetException.
+          final LocatedBlock ret2;
+          try {
+            ret2 = (LocatedBlock) invocation.callRealMethod();
+          } catch(NotReplicatedYetException e) {
+            throw new AssertionError("Unexpected exception", e);
+          }
+          final int blockCount2 = getBlockCount(ret2);
 
           // We shouldn't have gained an extra block by the RPC.
           assertEquals(blockCount, blockCount2);
@@ -911,11 +930,12 @@ public class TestDFSClientRetries {
         try {
           dis.read(arr, 0, (int)FILE_LENGTH);
           fail("Expected ChecksumException not thrown");
-        } catch (Exception ex) {
+        } catch (ChecksumException ex) {
           GenericTestUtils.assertExceptionContains(
-              "Checksum error", ex);
+              "Checksum", ex);
         }
       }
+      client.close();
     } finally {
       cluster.shutdown();
     }

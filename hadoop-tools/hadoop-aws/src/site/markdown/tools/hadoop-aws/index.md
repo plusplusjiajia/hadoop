@@ -47,10 +47,14 @@ recursive file-by-file operations. They take time at least proportional to
 the number of files, during which time partial updates may be visible. If
 the operations are interrupted, the filesystem is left in an intermediate state.
 
+## Warning #2: Because Object stores don't track modification times of directories,
+features of Hadoop relying on this can have unexpected behaviour. E.g. the
+AggregatedLogDeletionService of YARN will not remove the appropriate logfiles.
+
 For further discussion on these topics, please consult
 [The Hadoop FileSystem API Definition](../../../hadoop-project-dist/hadoop-common/filesystem/index.html).
 
-## Warning #2: your AWS credentials are valuable
+## Warning #3: your AWS credentials are valuable
 
 Your AWS credentials not only pay for services, they offer read and write
 access to the data. Anyone with the credentials can not only read your datasets
@@ -149,6 +153,51 @@ If you do any of these: change your credentials immediately!
       <name>fs.s3a.secret.key</name>
       <description>AWS secret key. Omit for Role-based authentication.</description>
     </property>
+
+#### Protecting the AWS Credentials in S3A
+
+To protect these credentials from prying eyes, it is recommended that you use
+the credential provider framework securely storing them and accessing them
+ through configuration. The following describes its use for AWS credentials
+in S3A FileSystem.
+
+For additional reading on the credential provider API see:
+[Credential Provider API](../../../hadoop-project-dist/hadoop-common/CredentialProviderAPI.html).
+
+##### End to End Steps for Distcp and S3 with Credential Providers
+
+###### provision
+
+```
+% hadoop credential create fs.s3a.access.key -value 123
+    -provider localjceks://file/home/lmccay/aws.jceks
+```
+
+```
+% hadoop credential create fs.s3a.secret.key -value 456
+    -provider localjceks://file/home/lmccay/aws.jceks
+```
+
+###### configure core-site.xml or command line system property
+
+```
+<property>
+  <name>hadoop.security.credential.provider.path</name>
+  <value>localjceks://file/home/lmccay/aws.jceks</value>
+  <description>Path to interrogate for protected credentials.</description>
+</property>
+```
+###### distcp
+
+```
+% hadoop distcp
+    [-D hadoop.security.credential.provider.path=localjceks://file/home/lmccay/aws.jceks]
+    hdfs://hostname:9001/user/lmccay/007020615 s3a://lmccay/
+```
+
+NOTE: You may optionally add the provider path property to the distcp command line instead of
+added job specific configuration to a generic core­site.xml. The square brackets above illustrate
+this capability.
 
 ### Other properties
 
@@ -263,6 +312,15 @@ If you do any of these: change your credentials immediately!
     </property>
 
     <property>
+      <name>fs.s3a.multiobjectdelete.enable</name>
+      <value>false</value>
+      <description>When enabled, multiple single-object delete requests are replaced by
+        a single 'delete multiple objects'-request, reducing the number of requests.
+        Beware: legacy S3-compatible object stores might not support this request.
+      </description>
+    </property>
+
+    <property>
       <name>fs.s3a.acl.default</name>
       <description>Set a canned ACL for newly created and copied objects. Value may be private,
          public-read, public-read-write, authenticated-read, log-delivery-write,
@@ -299,6 +357,12 @@ If you do any of these: change your credentials immediately!
       <name>fs.s3a.impl</name>
       <value>org.apache.hadoop.fs.s3a.S3AFileSystem</value>
       <description>The implementation class of the S3A Filesystem</description>
+    </property>
+
+    <property>
+      <name>fs.AbstractFileSystem.s3a.impl</name>
+      <value>org.apache.hadoop.fs.s3a.S3A</value>
+      <description>The implementation class of the S3A AbstractFileSystem.</description>
     </property>
 
 ### S3AFastOutputStream

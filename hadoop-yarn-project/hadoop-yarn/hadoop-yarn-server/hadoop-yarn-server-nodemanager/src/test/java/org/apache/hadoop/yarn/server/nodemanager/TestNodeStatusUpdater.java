@@ -62,6 +62,7 @@ import org.apache.hadoop.security.Credentials;
 import org.apache.hadoop.security.token.delegation.web.DelegationTokenIdentifier;
 import org.apache.hadoop.service.Service.STATE;
 import org.apache.hadoop.service.ServiceOperations;
+import org.apache.hadoop.util.concurrent.HadoopExecutors;
 import org.apache.hadoop.yarn.api.protocolrecords.SignalContainerRequest;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
@@ -74,6 +75,7 @@ import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.api.records.SignalContainerCommand;
 import org.apache.hadoop.yarn.api.records.Token;
 import org.apache.hadoop.yarn.client.RMProxy;
+import org.apache.hadoop.yarn.conf.HAUtil;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.event.Dispatcher;
 import org.apache.hadoop.yarn.event.EventHandler;
@@ -252,8 +254,10 @@ public class TestNodeStatusUpdater {
                 firstContainerID, InetAddress.getByName("localhost")
                     .getCanonicalHostName(), 1234, user, resource,
                 currentTime + 10000, 123, "password".getBytes(), currentTime));
+        Context context = mock(Context.class);
+        when(context.getNMStateStore()).thenReturn(stateStore);
         Container container = new ContainerImpl(conf, mockDispatcher,
-            stateStore, launchContext, null, mockMetrics, containerToken);
+            launchContext, null, mockMetrics, containerToken, context);
         this.context.getContainers().put(firstContainerID, container);
       } else if (heartBeatID == 2) {
         // Checks on the RM end
@@ -291,8 +295,10 @@ public class TestNodeStatusUpdater {
                 secondContainerID, InetAddress.getByName("localhost")
                     .getCanonicalHostName(), 1234, user, resource,
                 currentTime + 10000, 123, "password".getBytes(), currentTime));
+        Context context = mock(Context.class);
+        when(context.getNMStateStore()).thenReturn(stateStore);
         Container container = new ContainerImpl(conf, mockDispatcher,
-            stateStore, launchContext, null, mockMetrics, containerToken);
+            launchContext, null, mockMetrics, containerToken, context);
         this.context.getContainers().put(secondContainerID, container);
       } else if (heartBeatID == 3) {
         // Checks on the RM end
@@ -443,7 +449,8 @@ public class TestNodeStatusUpdater {
 
     @Override
     protected ResourceTracker getRMClient() throws IOException {
-      RetryPolicy retryPolicy = RMProxy.createRetryPolicy(conf);
+      RetryPolicy retryPolicy = RMProxy.createRetryPolicy(conf,
+          HAUtil.isHAEnabled(conf));
       resourceTracker =
           (ResourceTracker) RetryProxy.create(ResourceTracker.class,
             new MyResourceTracker6(rmStartIntervalMS, rmNeverStart),
@@ -476,7 +483,8 @@ public class TestNodeStatusUpdater {
 
     @Override
     protected ResourceTracker getRMClient() {
-      RetryPolicy retryPolicy = RMProxy.createRetryPolicy(conf);
+      RetryPolicy retryPolicy = RMProxy.createRetryPolicy(conf,
+          HAUtil.isHAEnabled(conf));
       return (ResourceTracker) RetryProxy.create(ResourceTracker.class,
         resourceTracker, retryPolicy);
     }
@@ -1007,8 +1015,9 @@ public class TestNodeStatusUpdater {
             BuilderUtils.newResource(1024, 1), 0, 123,
             "password".getBytes(), 0);
     Container anyCompletedContainer = new ContainerImpl(conf, null,
-        null, null, null, null,
-        BuilderUtils.newContainerTokenIdentifier(containerToken)) {
+        null, null, null,
+        BuilderUtils.newContainerTokenIdentifier(containerToken),
+        nm.getNMContext()) {
 
       @Override
       public ContainerState getCurrentState() {
@@ -1028,8 +1037,9 @@ public class TestNodeStatusUpdater {
           1234, "anyUser", BuilderUtils.newResource(1024, 1), 0, 123,
           "password".getBytes(), 0);
     Container runningContainer =
-        new ContainerImpl(conf, null, null, null, null, null,
-          BuilderUtils.newContainerTokenIdentifier(runningContainerToken)) {
+        new ContainerImpl(conf, null, null, null, null,
+          BuilderUtils.newContainerTokenIdentifier(runningContainerToken),
+          nm.getNMContext()) {
           @Override
           public ContainerState getCurrentState() {
             return ContainerState.RUNNING;
@@ -1086,8 +1096,9 @@ public class TestNodeStatusUpdater {
             BuilderUtils.newResource(1024, 1), 0, 123,
             "password".getBytes(), 0);
     Container completedContainer = new ContainerImpl(conf, null,
-        null, null, null, null,
-        BuilderUtils.newContainerTokenIdentifier(containerToken)) {
+        null, null, null,
+        BuilderUtils.newContainerTokenIdentifier(containerToken),
+        nm.getNMContext()) {
       @Override
       public ContainerState getCurrentState() {
         return ContainerState.COMPLETE;
@@ -1123,8 +1134,9 @@ public class TestNodeStatusUpdater {
             BuilderUtils.newResource(1024, 1), 0, 123,
             "password".getBytes(), 0);
     Container anyCompletedContainer = new ContainerImpl(conf, null,
-        null, null, null, null,
-        BuilderUtils.newContainerTokenIdentifier(containerToken)) {
+        null, null, null,
+        BuilderUtils.newContainerTokenIdentifier(containerToken),
+        nm.getNMContext()) {
 
       @Override
       public ContainerState getCurrentState() {
@@ -1266,7 +1278,14 @@ public class TestNodeStatusUpdater {
     }
 
     Assert.assertEquals(STATE.STOPPED, nm.getServiceState());
-    Assert.assertEquals(numCleanups.get(), 1);
+
+    // It further takes a while after NM reached the STOPPED state.
+    waitCount = 0;
+    while (numCleanups.get() == 0 && waitCount++ != 20) {
+      LOG.info("Waiting for NM shutdown..");
+      Thread.sleep(1000);
+    }
+    Assert.assertEquals(1, numCleanups.get());
   }
 
   @Test
@@ -1748,7 +1767,7 @@ public class TestNodeStatusUpdater {
 
     final int NUM_THREADS = 10;
     final CountDownLatch allDone = new CountDownLatch(NUM_THREADS);
-    final ExecutorService threadPool = Executors.newFixedThreadPool(
+    final ExecutorService threadPool = HadoopExecutors.newFixedThreadPool(
         NUM_THREADS);
 
     final AtomicBoolean stop = new AtomicBoolean(false);

@@ -213,11 +213,11 @@ public class TestWorkPreservingRMRestart extends ParameterizedSchedulerTestBase 
     assertTrue(
         "SchedulerNode#toString is not in expected format",
         schedulerNode1
-        .toString().contains(schedulerNode1.getAvailableResource().toString()));
+        .toString().contains(schedulerNode1.getUnallocatedResource().toString()));
     assertTrue(
         "SchedulerNode#toString is not in expected format",
         schedulerNode1
-        .toString().contains(schedulerNode1.getUsedResource().toString()));
+        .toString().contains(schedulerNode1.getAllocatedResource().toString()));
 
     // ********* check scheduler node state.*******
     // 2 running containers.
@@ -234,8 +234,8 @@ public class TestWorkPreservingRMRestart extends ParameterizedSchedulerTestBase 
     assertEquals(2, schedulerNode1.getNumContainers());
 
     assertEquals(Resources.subtract(nmResource, usedResources),
-      schedulerNode1.getAvailableResource());
-    assertEquals(usedResources, schedulerNode1.getUsedResource());
+      schedulerNode1.getUnallocatedResource());
+    assertEquals(usedResources, schedulerNode1.getAllocatedResource());
     Resource availableResources = Resources.subtract(nmResource, usedResources);
 
     // ***** check queue state based on the underlying scheduler ********
@@ -379,8 +379,8 @@ public class TestWorkPreservingRMRestart extends ParameterizedSchedulerTestBase 
     assertEquals(2, schedulerNode1.getNumContainers());
 
     assertEquals(Resources.subtract(nmResource, usedResources),
-        schedulerNode1.getAvailableResource());
-    assertEquals(usedResources, schedulerNode1.getUsedResource());
+        schedulerNode1.getUnallocatedResource());
+    assertEquals(usedResources, schedulerNode1.getAllocatedResource());
     Resource availableResources = Resources.subtract(nmResource, usedResources);
 
     // 6. Verify the scheduler state like attempt info.
@@ -1163,7 +1163,7 @@ public class TestWorkPreservingRMRestart extends ParameterizedSchedulerTestBase 
     rm2.start();
     nm1.setResourceTrackerService(rm2.getResourceTrackerService());
     nm1.registerNode();
-    ControlledClock clock = new ControlledClock(new SystemClock());
+    ControlledClock clock = new ControlledClock();
     long startTime = System.currentTimeMillis();
     ((RMContextImpl)rm2.getRMContext()).setSystemClock(clock);
     am1.setAMRMProtocol(rm2.getApplicationMasterService(), rm2.getRMContext());

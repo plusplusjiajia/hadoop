@@ -965,7 +965,8 @@ public class TestReplicationPolicy extends BaseReplicationPolicyTest {
     
     List<DatanodeStorageInfo> first = new ArrayList<>();
     List<DatanodeStorageInfo> second = new ArrayList<>();
-    replicator.splitNodesWithRack(replicaList, rackMap, first, second);
+    replicator.splitNodesWithRack(replicaList, replicaList, rackMap, first,
+        second);
     // storages[0] and storages[1] are in first set as their rack has two 
     // replica nodes, while storages[2] and dataNodes[5] are in second set.
     assertEquals(2, first.size());
@@ -1018,7 +1019,7 @@ public class TestReplicationPolicy extends BaseReplicationPolicyTest {
     DatanodeDescriptor delHintNode = storages[0].getDatanodeDescriptor();
     List<StorageType> excessTypes = storagePolicy.chooseExcess((short) 3,
         DatanodeStorageInfo.toStorageTypes(nonExcess));
-    excessReplicas = replicator.chooseReplicasToDelete(nonExcess, 3,
+    excessReplicas = replicator.chooseReplicasToDelete(nonExcess, nonExcess, 3,
         excessTypes, storages[3].getDatanodeDescriptor(), delHintNode);
     assertTrue(excessReplicas.size() == 1);
     assertTrue(excessReplicas.contains(storages[0]));
@@ -1031,7 +1032,7 @@ public class TestReplicationPolicy extends BaseReplicationPolicyTest {
     nonExcess.add(excessStorage);
     excessTypes = storagePolicy.chooseExcess((short) 3,
         DatanodeStorageInfo.toStorageTypes(nonExcess));
-    excessReplicas = replicator.chooseReplicasToDelete(nonExcess, 3,
+    excessReplicas = replicator.chooseReplicasToDelete(nonExcess, nonExcess, 3,
         excessTypes, storages[3].getDatanodeDescriptor(), null);
     assertTrue(excessReplicas.contains(excessStorage));
 
@@ -1051,7 +1052,7 @@ public class TestReplicationPolicy extends BaseReplicationPolicyTest {
     nonExcess.add(storages[5]);
     excessTypes = storagePolicy.chooseExcess((short) 3,
         DatanodeStorageInfo.toStorageTypes(nonExcess));
-    excessReplicas = replicator.chooseReplicasToDelete(nonExcess, 3,
+    excessReplicas = replicator.chooseReplicasToDelete(nonExcess, nonExcess, 3,
         excessTypes, storages[3].getDatanodeDescriptor(),
         storages[5].getDatanodeDescriptor());
     assertEquals(1, excessReplicas.size());
@@ -1070,7 +1071,7 @@ public class TestReplicationPolicy extends BaseReplicationPolicyTest {
     nonExcess.add(storages[3]);
     excessTypes = storagePolicy.chooseExcess((short) 3,
         DatanodeStorageInfo.toStorageTypes(nonExcess));
-    excessReplicas = replicator.chooseReplicasToDelete(nonExcess, 3,
+    excessReplicas = replicator.chooseReplicasToDelete(nonExcess, nonExcess, 3,
         excessTypes, storages[1].getDatanodeDescriptor(),
         storages[3].getDatanodeDescriptor());
     assertEquals(1, excessReplicas.size());
@@ -1084,7 +1085,7 @@ public class TestReplicationPolicy extends BaseReplicationPolicyTest {
     nonExcess.add(storages[2]);
     excessTypes = storagePolicy.chooseExcess((short) 1,
         DatanodeStorageInfo.toStorageTypes(nonExcess));
-    excessReplicas = replicator.chooseReplicasToDelete(nonExcess, 1,
+    excessReplicas = replicator.chooseReplicasToDelete(nonExcess, nonExcess, 1,
         excessTypes, storages[2].getDatanodeDescriptor(), null);
     assertEquals(1, excessReplicas.size());
     assertTrue(excessReplicas.contains(excessSSD));
@@ -1104,7 +1105,7 @@ public class TestReplicationPolicy extends BaseReplicationPolicyTest {
     nonExcess.add(storages[5]);
     excessTypes = storagePolicy.chooseExcess((short) 2,
         DatanodeStorageInfo.toStorageTypes(nonExcess));
-    excessReplicas = replicator.chooseReplicasToDelete(nonExcess, 2,
+    excessReplicas = replicator.chooseReplicasToDelete(nonExcess, nonExcess, 2,
         excessTypes, null, null);
     assertEquals(0, excessReplicas.size());
   }
@@ -1315,7 +1316,7 @@ public class TestReplicationPolicy extends BaseReplicationPolicyTest {
     FSNamesystem mockNS = mock(FSNamesystem.class);
     when(mockNS.hasWriteLock()).thenReturn(true);
     when(mockNS.hasReadLock()).thenReturn(true);
-    BlockManager bm = new BlockManager(mockNS, new HdfsConfiguration());
+    BlockManager bm = new BlockManager(mockNS, false, new HdfsConfiguration());
     UnderReplicatedBlocks underReplicatedBlocks = bm.neededReplications;
 
     BlockInfo block1 = genBlockInfo(ThreadLocalRandom.current().nextLong());
@@ -1365,7 +1366,7 @@ public class TestReplicationPolicy extends BaseReplicationPolicyTest {
     Namesystem mockNS = mock(Namesystem.class);
     when(mockNS.hasWriteLock()).thenReturn(true);
 
-    BlockManager bm = new BlockManager(mockNS, new HdfsConfiguration());
+    BlockManager bm = new BlockManager(mockNS, false, new HdfsConfiguration());
     UnderReplicatedBlocks underReplicatedBlocks = bm.neededReplications;
 
     long blkID1 = ThreadLocalRandom.current().nextLong();
@@ -1437,7 +1438,7 @@ public class TestReplicationPolicy extends BaseReplicationPolicyTest {
     Namesystem mockNS = mock(Namesystem.class);
     when(mockNS.hasReadLock()).thenReturn(true);
 
-    BlockManager bm = new BlockManager(mockNS, new HdfsConfiguration());
+    BlockManager bm = new BlockManager(mockNS, false, new HdfsConfiguration());
     UnderReplicatedBlocks underReplicatedBlocks = bm.neededReplications;
 
     BlockInfo block1 = genBlockInfo(ThreadLocalRandom.current().nextLong());
@@ -1463,5 +1464,45 @@ public class TestReplicationPolicy extends BaseReplicationPolicyTest {
     // This block remains and should not be skipped over.
     chosenBlocks = underReplicatedBlocks.chooseUnderReplicatedBlocks(1);
     assertTheChosenBlocks(chosenBlocks, 1, 0, 0, 0, 0);
+  }
+
+  /**
+   * In this testcase, passed 2 favored nodes dataNodes[0],dataNodes[1]
+   *
+   * Both favored nodes should be chosen as target for placing replication and
+   * then should fall into BlockPlacement policy for choosing remaining targets
+   * ie. third target as local writer rack , forth target on remote rack and
+   * fifth on same rack as second.
+   *
+   * @throws Exception
+   */
+  @Test
+  public void testChooseExcessReplicaApartFromFavoredNodes() throws Exception {
+    DatanodeStorageInfo[] targets;
+    List<DatanodeDescriptor> expectedTargets =
+        new ArrayList<DatanodeDescriptor>();
+    expectedTargets.add(dataNodes[0]);
+    expectedTargets.add(dataNodes[1]);
+    expectedTargets.add(dataNodes[2]);
+    expectedTargets.add(dataNodes[4]);
+    expectedTargets.add(dataNodes[5]);
+    List<DatanodeDescriptor> favouredNodes =
+        new ArrayList<DatanodeDescriptor>();
+    favouredNodes.add(dataNodes[0]);
+    favouredNodes.add(dataNodes[1]);
+    targets = chooseTarget(5, dataNodes[2], null, favouredNodes);
+    assertEquals(targets.length, 5);
+    for (int i = 0; i < targets.length; i++) {
+      assertTrue("Target should be a part of Expected Targets",
+          expectedTargets.contains(targets[i].getDatanodeDescriptor()));
+    }
+  }
+
+  private DatanodeStorageInfo[] chooseTarget(int numOfReplicas,
+      DatanodeDescriptor writer, Set<Node> excludedNodes,
+      List<DatanodeDescriptor> favoredNodes) {
+    return replicator.chooseTarget(filename, numOfReplicas, writer,
+        excludedNodes, BLOCK_SIZE, favoredNodes,
+        TestBlockStoragePolicy.DEFAULT_STORAGE_POLICY);
   }
 }

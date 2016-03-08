@@ -22,7 +22,6 @@ import com.google.common.annotations.VisibleForTesting;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.fs.StorageType;
-import org.apache.hadoop.hdfs.DFSClient;
 import org.apache.hadoop.hdfs.DFSStripedOutputStream;
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
@@ -35,6 +34,8 @@ import org.apache.hadoop.hdfs.security.token.block.BlockTokenIdentifier;
 import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
 import org.apache.hadoop.io.erasurecode.rawcoder.RawErasureDecoder;
 import org.apache.hadoop.security.token.Token;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.nio.ByteBuffer;
 import java.util.*;
@@ -71,6 +72,8 @@ import java.util.concurrent.TimeUnit;
  */
 @InterfaceAudience.Private
 public class StripedBlockUtil {
+
+  public static final Logger LOG = LoggerFactory.getLogger(StripedBlockUtil.class);
 
   /**
    * This method parses a striped block group into individual blocks.
@@ -168,6 +171,30 @@ public class StripedBlockUtil {
         + lastCellSize(lastStripeDataLen, cellSize, numDataBlocks, i);
   }
 
+  /**
+   * Compute the safe length given the internal block lengths.
+   *
+   * @param ecPolicy The EC policy used for the block group
+   * @param blockLens The lengths of internal blocks
+   * @return The safe length
+   */
+  public static long getSafeLength(ErasureCodingPolicy ecPolicy,
+      long[] blockLens) {
+    final int cellSize = ecPolicy.getCellSize();
+    final int dataBlkNum = ecPolicy.getNumDataUnits();
+    Preconditions.checkArgument(blockLens.length >= dataBlkNum);
+    final int stripeSize = dataBlkNum * cellSize;
+    long[] cpy = Arrays.copyOf(blockLens, blockLens.length);
+    Arrays.sort(cpy);
+    // full stripe is a stripe has at least dataBlkNum full cells.
+    // lastFullStripeIdx is the index of the last full stripe.
+    int lastFullStripeIdx =
+        (int) (cpy[cpy.length - dataBlkNum] / cellSize);
+    return lastFullStripeIdx * stripeSize; // return the safeLength
+    // TODO: Include lastFullStripeIdx+1 stripe in safeLength, if there exists
+    // such a stripe (and it must be partial).
+  }
+
   private static int lastCellSize(int size, int cellSize, int numDataBlocks,
       int i) {
     if (i < numDataBlocks) {
@@ -221,15 +248,11 @@ public class StripedBlockUtil {
         return new StripingChunkReadResult(StripingChunkReadResult.TIMEOUT);
       }
     } catch (ExecutionException e) {
-      if (DFSClient.LOG.isDebugEnabled()) {
-        DFSClient.LOG.debug("Exception during striped read task", e);
-      }
+      LOG.debug("Exception during striped read task", e);
       return new StripingChunkReadResult(futures.remove(future),
           StripingChunkReadResult.FAILED);
     } catch (CancellationException e) {
-      if (DFSClient.LOG.isDebugEnabled()) {
-        DFSClient.LOG.debug("Exception during striped read task", e);
-      }
+      LOG.debug("Exception during striped read task", e);
       return new StripingChunkReadResult(futures.remove(future),
           StripingChunkReadResult.CANCELLED);
     }

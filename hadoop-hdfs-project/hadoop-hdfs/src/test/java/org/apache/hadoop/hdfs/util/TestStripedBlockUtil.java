@@ -32,7 +32,9 @@ import static org.apache.hadoop.hdfs.util.StripedBlockUtil.*;
 import org.apache.hadoop.hdfs.server.namenode.ErasureCodingPolicyManager;
 import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.Timeout;
 
 import java.util.Random;
 
@@ -92,6 +94,9 @@ public class TestStripedBlockUtil {
   private int[] byteRangeStartOffsets;
   private int[] byteRangeSizes;
 
+  @Rule
+  public Timeout globalTimeout = new Timeout(300000);
+
   @Before
   public void setup(){
     blockGroupSizes = new int[]{1, getDelta(CELLSIZE), CELLSIZE,
@@ -126,9 +131,9 @@ public class TestStripedBlockUtil {
     DatanodeInfo[] locs = new DatanodeInfo[BLK_GROUP_WIDTH];
     String[] storageIDs = new String[BLK_GROUP_WIDTH];
     StorageType[] storageTypes = new StorageType[BLK_GROUP_WIDTH];
-    int[] indices = new int[BLK_GROUP_WIDTH];
+    byte[] indices = new byte[BLK_GROUP_WIDTH];
     for (int i = 0; i < BLK_GROUP_WIDTH; i++) {
-      indices[i] = (i + 2) % DATA_BLK_NUM;
+      indices[i] = (byte) ((i + 2) % DATA_BLK_NUM);
       // Location port always equal to logical index of a block,
       // for easier verification
       locs[i] = DFSTestUtil.getLocalDatanodeInfo(indices[i]);

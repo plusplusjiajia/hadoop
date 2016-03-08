@@ -33,13 +33,11 @@ import java.net.URLEncoder;
 import java.security.InvalidKeyException;
 import java.util.ArrayList;
 import java.util.Calendar;
-import java.util.Collections;
 import java.util.Date;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
-import java.util.LinkedList;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -64,6 +62,7 @@ import org.apache.hadoop.io.IOUtils;
 import org.mortbay.util.ajax.JSON;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 import com.google.common.annotations.VisibleForTesting;
 import com.microsoft.azure.storage.CloudStorageAccount;
 import com.microsoft.azure.storage.OperationContext;
@@ -451,7 +450,9 @@ public class AzureNativeFileSystemStore implements NativeFileSystemStore {
       // Add to this the hbase root directory, or /hbase is that is not set.
       hbaseRoot = verifyAndConvertToStandardFormat(
           sessionConfiguration.get("hbase.rootdir", "hbase"));
-      atomicRenameDirs.add(hbaseRoot);
+      if (hbaseRoot != null) {
+        atomicRenameDirs.add(hbaseRoot);
+      }
     } catch (URISyntaxException e) {
       LOG.warn("Unable to initialize HBase root as an atomic rename directory.");
     }
@@ -2565,6 +2566,36 @@ public class AzureNativeFileSystemStore implements NativeFileSystemStore {
   }
 
   /**
+   * Checks whether an explicit file/folder exists.
+   * This is used by redo of atomic rename.
+   * There was a bug(apache jira HADOOP-12780) during atomic rename if
+   * process crashes after an inner directory has been renamed but still
+   * there are file under that directory to be renamed then after the
+   * process comes again it tries to redo the renames. It checks whether
+   * the directory exists or not by calling filesystem.exist.
+   * But filesystem.Exists will treat that directory as implicit directory
+   * and return true as file exists under that directory. So It will try
+   * try to rename that directory and will fail as the corresponding blob
+   * does not exist. So this method explicitly checks for the blob.
+   */
+  @Override
+  public boolean explicitFileExists(String key) throws AzureException {
+    CloudBlobWrapper blob;
+    try {
+      blob = getBlobReference(key);
+      if (null != blob && blob.exists(getInstrumentedContext())) {
+        return true;
+      }
+
+      return false;
+    } catch (StorageException e) {
+      throw new AzureException(e);
+    } catch (URISyntaxException e) {
+      throw new AzureException(e);
+    }
+  }
+
+  /**
    * Changes the permission status on the given key.
    */
   @Override
@@ -2679,5 +2710,25 @@ public class AzureNativeFileSystemStore implements NativeFileSystemStore {
     LOG.debug("finalize() called");
     close();
     super.finalize();
+  }
+
+  @Override
+  public DataOutputStream retrieveAppendStream(String key, int bufferSize) throws IOException {
+
+    try {
+
+      if (isPageBlobKey(key)) {
+        throw new UnsupportedOperationException("Append not supported for Page Blobs");
+      }
+
+      CloudBlobWrapper blob =  this.container.getBlockBlobReference(key);
+
+      BlockBlobAppendStream appendStream = new BlockBlobAppendStream((CloudBlockBlobWrapper) blob, key, bufferSize, getInstrumentedContext());
+      appendStream.initialize();
+
+      return new DataOutputStream(appendStream);
+    } catch(Exception ex) {
+      throw new AzureException(ex);
+    }
   }
 }

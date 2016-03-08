@@ -17,8 +17,12 @@
  */
 package org.apache.hadoop.test;
 
+import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileReader;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.io.StringWriter;
 import java.lang.management.ManagementFactory;
 import java.lang.management.ThreadInfo;
@@ -32,6 +36,7 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
 
+import org.apache.commons.io.IOUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.impl.Log4JLogger;
 import org.apache.hadoop.fs.FileUtil;
@@ -418,23 +423,59 @@ public abstract class GenericTestUtils {
   }
 
   /**
+   * Determine if there are any threads whose name matches the regex.
+   * @param pattern a Pattern object used to match thread names
+   * @return true if there is any thread that matches the pattern
+   */
+  public static boolean anyThreadMatching(Pattern pattern) {
+    ThreadMXBean threadBean = ManagementFactory.getThreadMXBean();
+
+    ThreadInfo[] infos =
+        threadBean.getThreadInfo(threadBean.getAllThreadIds(), 20);
+    for (ThreadInfo info : infos) {
+      if (info == null)
+        continue;
+      if (pattern.matcher(info.getThreadName()).matches()) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
    * Assert that there are no threads running whose name matches the
    * given regular expression.
    * @param regex the regex to match against
    */
   public static void assertNoThreadsMatching(String regex) {
     Pattern pattern = Pattern.compile(regex);
-    ThreadMXBean threadBean = ManagementFactory.getThreadMXBean();
-    
-    ThreadInfo[] infos = threadBean.getThreadInfo(threadBean.getAllThreadIds(), 20);
-    for (ThreadInfo info : infos) {
-      if (info == null) continue;
-      if (pattern.matcher(info.getThreadName()).matches()) {
-        Assert.fail("Leaked thread: " + info + "\n" +
-            Joiner.on("\n").join(info.getStackTrace()));
-      }
+    if (anyThreadMatching(pattern)) {
+      Assert.fail("Leaked thread matches " + regex);
     }
   }
+
+  /**
+   * Periodically check and wait for any threads whose name match the
+   * given regular expression.
+   *
+   * @param regex the regex to match against.
+   * @param checkEveryMillis time (in milliseconds) between checks.
+   * @param waitForMillis total time (in milliseconds) to wait before throwing
+   *                      a time out exception.
+   * @throws TimeoutException
+   * @throws InterruptedException
+   */
+  public static void waitForThreadTermination(String regex,
+      int checkEveryMillis, final int waitForMillis) throws TimeoutException,
+      InterruptedException {
+    final Pattern pattern = Pattern.compile(regex);
+    waitFor(new Supplier<Boolean>() {
+      @Override public Boolean get() {
+        return !anyThreadMatching(pattern);
+      }
+    }, checkEveryMillis, waitForMillis);
+  }
+
 
   /**
    * Skip test if native build profile of Maven is not activated.
@@ -443,6 +484,57 @@ public abstract class GenericTestUtils {
    */
   public static void assumeInNativeProfile() {
     Assume.assumeTrue(
-        Boolean.valueOf(System.getProperty("runningWithNative", "false")));
+        Boolean.parseBoolean(System.getProperty("runningWithNative", "false")));
+  }
+
+  /**
+   * Get the diff between two files.
+   *
+   * @param a
+   * @param b
+   * @return The empty string if there is no diff; the diff, otherwise.
+   *
+   * @throws IOException If there is an error reading either file.
+   */
+  public static String getFilesDiff(File a, File b) throws IOException {
+    StringBuilder bld = new StringBuilder();
+    BufferedReader ra = null, rb = null;
+    try {
+      ra = new BufferedReader(
+          new InputStreamReader(new FileInputStream(a)));
+      rb = new BufferedReader(
+          new InputStreamReader(new FileInputStream(b)));
+      while (true) {
+        String la = ra.readLine();
+        String lb = rb.readLine();
+        if (la == null) {
+          if (lb != null) {
+            addPlusses(bld, ra);
+          }
+          break;
+        } else if (lb == null) {
+          if (la != null) {
+            addPlusses(bld, rb);
+          }
+          break;
+        }
+        if (!la.equals(lb)) {
+          bld.append(" - ").append(la).append("\n");
+          bld.append(" + ").append(lb).append("\n");
+        }
+      }
+    } finally {
+      IOUtils.closeQuietly(ra);
+      IOUtils.closeQuietly(rb);
+    }
+    return bld.toString();
+  }
+
+  private static void addPlusses(StringBuilder bld, BufferedReader r)
+      throws IOException {
+    String l;
+    while ((l = r.readLine()) != null) {
+      bld.append(" + ").append(l).append("\n");
+    }
   }
 }

@@ -32,6 +32,8 @@ import static org.mockito.Mockito.verify;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.EnumSet;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map.Entry;
@@ -48,16 +50,22 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.CreateFlag;
+import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
+import org.apache.hadoop.hdfs.DFSOutputStream;
 import org.apache.hadoop.hdfs.DFSTestUtil;
+import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.BlockListAsLongs;
+import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
+import org.apache.hadoop.hdfs.protocol.LocatedBlock;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor.BlockTargetPair;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants;
 import org.apache.hadoop.hdfs.server.datanode.DataNodeTestUtils;
@@ -68,10 +76,14 @@ import org.apache.hadoop.hdfs.server.namenode.INodeFile;
 import org.apache.hadoop.hdfs.server.namenode.INodeId;
 import org.apache.hadoop.hdfs.server.namenode.NameNodeAdapter;
 import org.apache.hadoop.hdfs.server.namenode.TestINodeFile;
+import org.apache.hadoop.hdfs.server.protocol.BlockReportContext;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeRegistration;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeStorage;
+import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocols;
 import org.apache.hadoop.hdfs.server.protocol.ReceivedDeletedBlockInfo;
 import org.apache.hadoop.hdfs.server.protocol.StorageReceivedDeletedBlocks;
+import org.apache.hadoop.io.EnumSetWritable;
+import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.ipc.RemoteException;
 import org.apache.hadoop.metrics2.MetricsRecordBuilder;
 import org.apache.hadoop.net.NetworkTopology;
@@ -120,7 +132,7 @@ public class TestBlockManager {
     Mockito.doReturn(true).when(fsn).hasWriteLock();
     Mockito.doReturn(true).when(fsn).hasReadLock();
     Mockito.doReturn(true).when(fsn).isRunning();
-    bm = new BlockManager(fsn, conf);
+    bm = new BlockManager(fsn, false, conf);
     final String[] racks = {
         "/rackA",
         "/rackA",
@@ -397,6 +409,54 @@ public class TestBlockManager {
     assertFalse(bm.isNeededReplication(block, bm.countLiveNodes(block)));
   }
   
+  @Test(timeout = 60000)
+  public void testNeededReplicationWhileAppending() throws IOException {
+    Configuration conf = new HdfsConfiguration();
+    String src = "/test-file";
+    Path file = new Path(src);
+    MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).build();
+    cluster.waitActive();
+    try {
+      BlockManager bm = cluster.getNamesystem().getBlockManager();
+      FileSystem fs = cluster.getFileSystem();
+      NamenodeProtocols namenode = cluster.getNameNodeRpc();
+      DFSOutputStream out = null;
+      try {
+        out = (DFSOutputStream) (fs.create(file).
+            getWrappedStream());
+        out.write(1);
+        out.hflush();
+        out.close();
+        FSDataInputStream in = null;
+        ExtendedBlock oldBlock = null;
+        try {
+          in = fs.open(file);
+          oldBlock = DFSTestUtil.getAllBlocks(in).get(0).getBlock();
+        } finally {
+          IOUtils.closeStream(in);
+        }
+
+        String clientName =
+            ((DistributedFileSystem) fs).getClient().getClientName();
+        namenode.append(src, clientName, new EnumSetWritable<>(
+            EnumSet.of(CreateFlag.APPEND)));
+        LocatedBlock newLocatedBlock =
+            namenode.updateBlockForPipeline(oldBlock, clientName);
+        ExtendedBlock newBlock =
+            new ExtendedBlock(oldBlock.getBlockPoolId(), oldBlock.getBlockId(),
+                oldBlock.getNumBytes(),
+                newLocatedBlock.getBlock().getGenerationStamp());
+        namenode.updatePipeline(clientName, oldBlock, newBlock,
+            newLocatedBlock.getLocations(), newLocatedBlock.getStorageIDs());
+        BlockInfo bi = bm.getStoredBlock(newBlock.getLocalBlock());
+        assertFalse(bm.isNeededReplication(bi, bm.countLiveNodes(bi)));
+      } finally {
+        IOUtils.closeStream(out);
+      }
+    } finally {
+      cluster.shutdown();
+    }
+  }
   
   /**
    * Tell the block manager that replication is completed for the given
@@ -480,8 +540,8 @@ public class TestBlockManager {
     assertEquals("Block not initially pending replication", 0,
         bm.pendingReplications.getNumReplicas(block));
     assertEquals(
-        "computeBlockRecoveryWork should indicate replication is needed", 1,
-        bm.computeRecoveryWorkForBlocks(list_all));
+        "computeBlockReconstructionWork should indicate replication is needed",
+        1, bm.computeReconstructionWorkForBlocks(list_all));
     assertTrue("replication is pending after work is computed",
         bm.pendingReplications.getNumReplicas(block) > 0);
 
@@ -540,7 +600,7 @@ public class TestBlockManager {
             cntNodes,
             liveNodes,
             new NumberReplicas(),
-            new ArrayList<Short>(),
+            new ArrayList<Byte>(),
             UnderReplicatedBlocks.QUEUE_HIGHEST_PRIORITY)[0]);
 
     assertEquals("Does not choose a source node for a less-than-highest-priority"
@@ -551,7 +611,7 @@ public class TestBlockManager {
             cntNodes,
             liveNodes,
             new NumberReplicas(),
-            new ArrayList<Short>(),
+            new ArrayList<Byte>(),
             UnderReplicatedBlocks.QUEUE_VERY_UNDER_REPLICATED).length);
 
     // Increase the replication count to test replication count > hard limit
@@ -565,7 +625,7 @@ public class TestBlockManager {
             cntNodes,
             liveNodes,
             new NumberReplicas(),
-            new ArrayList<Short>(),
+            new ArrayList<Byte>(),
             UnderReplicatedBlocks.QUEUE_HIGHEST_PRIORITY).length);
   }
 
@@ -591,7 +651,7 @@ public class TestBlockManager {
             bm.getStoredBlock(aBlock),
             cntNodes,
             liveNodes,
-            new NumberReplicas(), new LinkedList<Short>(),
+            new NumberReplicas(), new LinkedList<Byte>(),
             UnderReplicatedBlocks.QUEUE_UNDER_REPLICATED)[0]);
 
 
@@ -605,7 +665,7 @@ public class TestBlockManager {
             bm.getStoredBlock(aBlock),
             cntNodes,
             liveNodes,
-            new NumberReplicas(), new LinkedList<Short>(),
+            new NumberReplicas(), new LinkedList<Byte>(),
             UnderReplicatedBlocks.QUEUE_UNDER_REPLICATED).length);
   }
 
@@ -748,7 +808,8 @@ public class TestBlockManager {
     // Make sure it's the first full report
     assertEquals(0, ds.getBlockReportCount());
     bm.processReport(node, new DatanodeStorage(ds.getStorageID()),
-        builder.build(), null, false);
+        builder.build(),
+        new BlockReportContext(1, 0, System.nanoTime(), 0, true), false);
     assertEquals(1, ds.getBlockReportCount());
 
     // verify the storage info is correct
@@ -761,6 +822,70 @@ public class TestBlockManager {
     assertNull(bm.getStoredBlock(new Block(ReceivedDeletedBlockId)));
     assertTrue(bm.getStoredBlock(new Block(existedBlock)).findStorageInfo
         (ds) >= 0);
+  }
+
+  @Test
+  public void testFullBR() throws Exception {
+    doReturn(true).when(fsn).isRunning();
+
+    DatanodeDescriptor node = nodes.get(0);
+    DatanodeStorageInfo ds = node.getStorageInfos()[0];
+    node.setAlive(true);
+    DatanodeRegistration nodeReg =  new DatanodeRegistration(node, null, null, "");
+
+    // register new node
+    bm.getDatanodeManager().registerDatanode(nodeReg);
+    bm.getDatanodeManager().addDatanode(node);
+    assertEquals(node, bm.getDatanodeManager().getDatanode(node));
+    assertEquals(0, ds.getBlockReportCount());
+
+    ArrayList<BlockInfo> blocks = new ArrayList<>();
+    for (int id = 24; id > 0; id--) {
+      blocks.add(addBlockToBM(id));
+    }
+
+    // Make sure it's the first full report
+    assertEquals(0, ds.getBlockReportCount());
+    bm.processReport(node, new DatanodeStorage(ds.getStorageID()),
+                     generateReport(blocks),
+                     new BlockReportContext(1, 0, System.nanoTime(), 0, false),
+                     false);
+    assertEquals(1, ds.getBlockReportCount());
+    // verify the storage info is correct
+    for (BlockInfo block : blocks) {
+      assertTrue(bm.getStoredBlock(block).findStorageInfo(ds) >= 0);
+    }
+
+    // Send unsorted report
+    bm.processReport(node, new DatanodeStorage(ds.getStorageID()),
+                     generateReport(blocks),
+                     new BlockReportContext(1, 0, System.nanoTime(), 0, false),
+                     false);
+    assertEquals(2, ds.getBlockReportCount());
+    // verify the storage info is correct
+    for (BlockInfo block : blocks) {
+      assertTrue(bm.getStoredBlock(block).findStorageInfo(ds) >= 0);
+    }
+
+    // Sort list and send a sorted report
+    Collections.sort(blocks);
+    bm.processReport(node, new DatanodeStorage(ds.getStorageID()),
+                     generateReport(blocks),
+                     new BlockReportContext(1, 0, System.nanoTime(), 0, true),
+                     false);
+    assertEquals(3, ds.getBlockReportCount());
+    // verify the storage info is correct
+    for (BlockInfo block : blocks) {
+      assertTrue(bm.getStoredBlock(block).findStorageInfo(ds) >= 0);
+    }
+  }
+
+  private BlockListAsLongs generateReport(List<BlockInfo> blocks) {
+    BlockListAsLongs.Builder builder = BlockListAsLongs.builder();
+    for (BlockInfo block : blocks) {
+      builder.add(new FinalizedReplica(block, null, null));
+    }
+    return builder.build();
   }
 
   private BlockInfo addBlockToBM(long blkId) {

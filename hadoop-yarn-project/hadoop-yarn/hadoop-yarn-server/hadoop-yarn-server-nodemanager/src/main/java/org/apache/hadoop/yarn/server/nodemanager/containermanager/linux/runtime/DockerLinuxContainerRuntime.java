@@ -20,6 +20,7 @@
 
 package org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.runtime;
 
+import com.google.common.annotations.VisibleForTesting;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
@@ -36,7 +37,6 @@ import org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.privileg
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.privileged.PrivilegedOperationException;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.privileged.PrivilegedOperationExecutor;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.resources.CGroupsHandler;
-import org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.resources.ResourceHandlerException;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.resources.ResourceHandlerModule;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.runtime.docker.DockerClient;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.runtime.docker.DockerRunCommand;
@@ -76,6 +76,7 @@ public class DockerLinuxContainerRuntime implements LinuxContainerRuntime {
   private Configuration conf;
   private DockerClient dockerClient;
   private PrivilegedOperationExecutor privilegedOperationExecutor;
+  private CGroupsHandler cGroupsHandler;
   private AccessControlList privilegedContainersAcl;
 
   public static boolean isDockerContainerRequested(
@@ -91,7 +92,23 @@ public class DockerLinuxContainerRuntime implements LinuxContainerRuntime {
 
   public DockerLinuxContainerRuntime(PrivilegedOperationExecutor
       privilegedOperationExecutor) {
+    this(privilegedOperationExecutor, ResourceHandlerModule
+        .getCGroupsHandler());
+  }
+
+  //A constructor with an injected cGroupsHandler primarily used for testing.
+  @VisibleForTesting
+  public DockerLinuxContainerRuntime(PrivilegedOperationExecutor
+      privilegedOperationExecutor, CGroupsHandler cGroupsHandler) {
     this.privilegedOperationExecutor = privilegedOperationExecutor;
+
+    if (cGroupsHandler == null) {
+      if (LOG.isInfoEnabled()) {
+        LOG.info("cGroupsHandler is null - cgroups not in use.");
+      }
+    } else {
+      this.cGroupsHandler = cGroupsHandler;
+    }
   }
 
   @Override
@@ -113,33 +130,34 @@ public class DockerLinuxContainerRuntime implements LinuxContainerRuntime {
   public void addCGroupParentIfRequired(String resourcesOptions,
       String containerIdStr, DockerRunCommand runCommand)
       throws ContainerExecutionException {
+    if (cGroupsHandler == null) {
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("cGroupsHandler is null. cgroups are not in use. nothing to"
+            + " do.");
+      }
+      return;
+    }
+
     if (resourcesOptions.equals(
         (PrivilegedOperation.CGROUP_ARG_PREFIX + PrivilegedOperation
             .CGROUP_ARG_NO_TASKS))) {
-      if (LOG.isInfoEnabled()) {
-        LOG.info("no resource restrictions specified. not using docker's "
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("no resource restrictions specified. not using docker's "
             + "cgroup options");
       }
     } else {
-      if (LOG.isInfoEnabled()) {
-        LOG.info("using docker's cgroups options");
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("using docker's cgroups options");
       }
 
-      try {
-        CGroupsHandler cGroupsHandler = ResourceHandlerModule
-            .getCGroupsHandler(conf);
-        String cGroupPath = "/" + cGroupsHandler.getRelativePathForCGroup(
-            containerIdStr);
+      String cGroupPath = "/" + cGroupsHandler.getRelativePathForCGroup(
+          containerIdStr);
 
-        if (LOG.isInfoEnabled()) {
-          LOG.info("using cgroup parent: " + cGroupPath);
-        }
-
-        runCommand.setCGroupParent(cGroupPath);
-      } catch (ResourceHandlerException e) {
-        LOG.warn("unable to use cgroups handler. Exception: ", e);
-        throw new ContainerExecutionException(e);
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("using cgroup parent: " + cGroupPath);
       }
+
+      runCommand.setCGroupParent(cGroupPath);
     }
   }
 
@@ -230,6 +248,12 @@ public class DockerLinuxContainerRuntime implements LinuxContainerRuntime {
     List<String> localDirs = ctx.getExecutionAttribute(LOCAL_DIRS);
     @SuppressWarnings("unchecked")
     List<String> logDirs = ctx.getExecutionAttribute(LOG_DIRS);
+    @SuppressWarnings("unchecked")
+    List<String> containerLocalDirs = ctx.getExecutionAttribute(
+        CONTAINER_LOCAL_DIRS);
+    @SuppressWarnings("unchecked")
+    List<String> containerLogDirs = ctx.getExecutionAttribute(
+        CONTAINER_LOG_DIRS);
     Set<String> capabilities = new HashSet<>(Arrays.asList(conf.getStrings(
         YarnConfiguration.NM_DOCKER_CONTAINER_CAPABILITIES,
         YarnConfiguration.DEFAULT_NM_DOCKER_CONTAINER_CAPABILITIES)));
@@ -242,10 +266,10 @@ public class DockerLinuxContainerRuntime implements LinuxContainerRuntime {
         .setNetworkType("host")
         .setCapabilities(capabilities)
         .addMountLocation("/etc/passwd", "/etc/password:ro");
-    List<String> allDirs = new ArrayList<>(localDirs);
+    List<String> allDirs = new ArrayList<>(containerLocalDirs);
 
     allDirs.add(containerWorkDir.toString());
-    allDirs.addAll(logDirs);
+    allDirs.addAll(containerLogDirs);
     for (String dir: allDirs) {
       runCommand.addMountLocation(dir, dir);
     }
@@ -256,11 +280,7 @@ public class DockerLinuxContainerRuntime implements LinuxContainerRuntime {
 
     String resourcesOpts = ctx.getExecutionAttribute(RESOURCES_OPTIONS);
 
-    /** Disabling docker's cgroup parent support for the time being. Docker
-     * needs to use a more recent libcontainer that supports net_cls. In
-     * addition we also need to revisit current cgroup creation in YARN.
-     */
-    //addCGroupParentIfRequired(resourcesOpts, containerIdStr, runCommand);
+    addCGroupParentIfRequired(resourcesOpts, containerIdStr, runCommand);
 
    Path nmPrivateContainerScriptPath = ctx.getExecutionAttribute(
         NM_PRIVATE_CONTAINER_SCRIPT_PATH);
@@ -285,8 +305,7 @@ public class DockerLinuxContainerRuntime implements LinuxContainerRuntime {
     String commandFile = dockerClient.writeCommandToTempFile(runCommand,
         containerIdStr);
     PrivilegedOperation launchOp = new PrivilegedOperation(
-        PrivilegedOperation.OperationType.LAUNCH_DOCKER_CONTAINER, (String)
-        null);
+        PrivilegedOperation.OperationType.LAUNCH_DOCKER_CONTAINER);
 
     launchOp.appendArgs(runAsUser, ctx.getExecutionAttribute(USER),
         Integer.toString(PrivilegedOperation
@@ -326,7 +345,7 @@ public class DockerLinuxContainerRuntime implements LinuxContainerRuntime {
       throws ContainerExecutionException {
     Container container = ctx.getContainer();
     PrivilegedOperation signalOp = new PrivilegedOperation(
-        PrivilegedOperation.OperationType.SIGNAL_CONTAINER, (String) null);
+        PrivilegedOperation.OperationType.SIGNAL_CONTAINER);
 
     signalOp.appendArgs(ctx.getExecutionAttribute(RUN_AS_USER),
         ctx.getExecutionAttribute(USER),

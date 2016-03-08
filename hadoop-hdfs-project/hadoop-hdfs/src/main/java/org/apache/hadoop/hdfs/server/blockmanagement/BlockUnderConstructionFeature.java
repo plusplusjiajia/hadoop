@@ -110,9 +110,9 @@ public class BlockUnderConstructionFeature {
    * @return the index array indicating the block index in each storage. Used
    * only by striped blocks.
    */
-  public int[] getBlockIndices() {
+  public byte[] getBlockIndices() {
     int numLocations = getNumExpectedLocations();
-    int[] indices = new int[numLocations];
+    byte[] indices = new byte[numLocations];
     for (int i = 0; i < numLocations; i++) {
       indices[i] = BlockIdManager.getBlockIndex(replicas[i]);
     }
@@ -121,6 +121,31 @@ public class BlockUnderConstructionFeature {
 
   public int getNumExpectedLocations() {
     return replicas == null ? 0 : replicas.length;
+  }
+
+  /**
+   * when committing a striped block whose size is less than a stripe, we need
+   * to decrease the scheduled block size of the DataNodes that do not store
+   * any internal block.
+   */
+  void updateStorageScheduledSize(BlockInfoStriped storedBlock) {
+    assert storedBlock.getUnderConstructionFeature() == this;
+    if (replicas == null) {
+      return;
+    }
+    final int dataBlockNum = storedBlock.getDataBlockNum();
+    final int realDataBlockNum = storedBlock.getRealDataBlockNum();
+    if (realDataBlockNum < dataBlockNum) {
+      for (ReplicaUnderConstruction replica : replicas) {
+        int index = BlockIdManager.getBlockIndex(replica);
+        if (index >= realDataBlockNum && index < dataBlockNum) {
+          final DatanodeStorageInfo storage =
+              replica.getExpectedStorageLocation();
+          storage.getDatanodeDescriptor()
+              .decrementBlocksScheduled(storage.getStorageType());
+        }
+      }
+    }
   }
 
   /**

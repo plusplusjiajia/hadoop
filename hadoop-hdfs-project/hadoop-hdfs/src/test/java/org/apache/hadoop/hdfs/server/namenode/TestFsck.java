@@ -76,6 +76,7 @@ import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.CorruptFileBlocks;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
+import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.protocol.HdfsFileStatus;
 import org.apache.hadoop.hdfs.protocol.LocatedBlock;
@@ -652,14 +653,15 @@ public class TestFsck {
   public void testFsckOpenECFiles() throws Exception {
     DFSTestUtil util = new DFSTestUtil.Builder().setName("TestFsckECFile").
         setNumFiles(4).build();
-    MiniDFSCluster cluster = null;
+    Configuration conf = new HdfsConfiguration();
+    conf.setLong(DFSConfigKeys.DFS_BLOCKREPORT_INTERVAL_MSEC_KEY, 10000L);
+    ErasureCodingPolicy ecPolicy =
+        ErasureCodingPolicyManager.getSystemDefaultPolicy();
+    int numAllUnits = ecPolicy.getNumDataUnits() + ecPolicy.getNumParityUnits();
+    MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).numDataNodes(
+        numAllUnits + 1).build();
     FileSystem fs = null;
-    String outStr;
     try {
-      Configuration conf = new HdfsConfiguration();
-      conf.setLong(DFSConfigKeys.DFS_BLOCKREPORT_INTERVAL_MSEC_KEY, 10000L);
-      cluster = new MiniDFSCluster.Builder(conf).numDataNodes(10).build();
-      cluster.getFileSystem().getClient().setErasureCodingPolicy("/", null);
       String topDir = "/myDir";
       byte[] randomBytes = new byte[3000000];
       int seed = 42;
@@ -667,7 +669,12 @@ public class TestFsck {
       cluster.waitActive();
       fs = cluster.getFileSystem();
       util.createFiles(fs, topDir);
+      // set topDir to EC when it has replicated files
+      cluster.getFileSystem().getClient().setErasureCodingPolicy(
+          topDir, ecPolicy);
 
+      // create a new file under topDir
+      DFSTestUtil.createFile(fs, new Path(topDir, "ecFile"), 1024, (short) 1, 0L);
       // Open a EC file for writing and do not close for now
       Path openFile = new Path(topDir + "/openECFile");
       FSDataOutputStream out = fs.create(openFile);
@@ -677,21 +684,24 @@ public class TestFsck {
         writeCount++;
       }
 
+      // make sure the fsck can correctly handle mixed ec/replicated files
+      runFsck(conf, 0, true, topDir, "-files", "-blocks", "-openforwrite");
+
       // We expect the filesystem to be HEALTHY and show one open file
-      outStr = runFsck(conf, 0, true, openFile.toString(), "-files",
+      String outStr = runFsck(conf, 0, true, openFile.toString(), "-files",
           "-blocks", "-openforwrite");
       assertTrue(outStr.contains(NamenodeFsck.HEALTHY_STATUS));
       assertTrue(outStr.contains("OPENFORWRITE"));
-      assertTrue(outStr.contains("Live_repl=9"));
-      assertTrue(outStr.contains("Expected_repl=9"));
+      assertTrue(outStr.contains("Live_repl=" + numAllUnits));
+      assertTrue(outStr.contains("Expected_repl=" + numAllUnits));
 
       // Use -openforwrite option to list open files
       outStr = runFsck(conf, 0, true, openFile.toString(), "-files", "-blocks",
           "-locations", "-openforwrite", "-replicaDetails");
       assertTrue(outStr.contains(NamenodeFsck.HEALTHY_STATUS));
       assertTrue(outStr.contains("OPENFORWRITE"));
-      assertTrue(outStr.contains("Live_repl=9"));
-      assertTrue(outStr.contains("Expected_repl=9"));
+      assertTrue(outStr.contains("Live_repl=" + numAllUnits));
+      assertTrue(outStr.contains("Expected_repl=" + numAllUnits));
       assertTrue(outStr.contains("Under Construction Block:"));
 
       // Close the file
@@ -703,8 +713,8 @@ public class TestFsck {
       assertTrue(outStr.contains(NamenodeFsck.HEALTHY_STATUS));
       assertFalse(outStr.contains("OPENFORWRITE"));
       assertFalse(outStr.contains("Under Construction Block:"));
-      assertFalse(outStr.contains("Expected_repl=9"));
-      assertTrue(outStr.contains("Live_repl=9"));
+      assertFalse(outStr.contains("Expected_repl=" + numAllUnits));
+      assertTrue(outStr.contains("Live_repl=" + numAllUnits));
       util.cleanup(fs, topDir);
     } finally {
       if (fs != null) {

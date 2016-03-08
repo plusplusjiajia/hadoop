@@ -36,11 +36,14 @@ public class AppAttemptInfo {
 
   protected int id;
   protected long startTime;
+  protected long finishedTime;
   protected String containerId;
   protected String nodeHttpAddress;
   protected String nodeId;
   protected String logsLink;
   protected String blacklistedNodes;
+  protected String rmBlacklistedNodesForAMLaunches;
+  protected String appAttemptId;
 
   public AppAttemptInfo() {
   }
@@ -56,6 +59,7 @@ public class AppAttemptInfo {
     if (attempt != null) {
       this.id = attempt.getAppAttemptId().getAttemptId();
       this.startTime = attempt.getStartTime();
+      this.finishedTime = attempt.getFinishTime();
       Container masterContainer = attempt.getMasterContainer();
       if (masterContainer != null) {
         this.containerId = masterContainer.getId().toString();
@@ -64,6 +68,10 @@ public class AppAttemptInfo {
         this.logsLink = WebAppUtils.getRunningLogURL(schemePrefix
             + masterContainer.getNodeHttpAddress(),
             ConverterUtils.toString(masterContainer.getId()), user);
+
+        rmBlacklistedNodesForAMLaunches = StringUtils.join(
+            attempt.getAMBlacklist().getBlacklistUpdates().getAdditions(),
+            ", ");
         if (rm.getResourceScheduler() instanceof AbstractYarnScheduler) {
           AbstractYarnScheduler ayScheduler =
               (AbstractYarnScheduler) rm.getResourceScheduler();
@@ -75,6 +83,7 @@ public class AppAttemptInfo {
           }
         }
       }
+      this.appAttemptId = attempt.getAppAttemptId().toString();
     }
   }
 
@@ -84,6 +93,10 @@ public class AppAttemptInfo {
 
   public long getStartTime() {
     return this.startTime;
+  }
+
+  public long getFinishedTime() {
+    return this.finishedTime;
   }
 
   public String getNodeHttpAddress() {

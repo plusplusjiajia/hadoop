@@ -282,8 +282,7 @@ public class NameNode implements NameNodeStatusMXBean {
       + StartupOption.BOOTSTRAPSTANDBY.getName() + "] | \n\t["
       + StartupOption.RECOVER.getName() + " [ "
       + StartupOption.FORCE.getName() + "] ] | \n\t["
-      + StartupOption.METADATAVERSION.getName() + " ] "
-      + " ]";
+      + StartupOption.METADATAVERSION.getName() + " ]";
 
   
   public long getProtocolVersion(String protocol, 
@@ -671,6 +670,11 @@ public class NameNode implements NameNodeStatusMXBean {
     NameNode.initMetrics(conf, this.getRole());
     StartupProgressMetrics.register(startupProgress);
 
+    pauseMonitor = new JvmPauseMonitor();
+    pauseMonitor.init(conf);
+    pauseMonitor.start();
+    metrics.getJvmMetrics().setPauseMonitor(pauseMonitor);
+
     if (NamenodeRole.NAMENODE == role) {
       startHttpServer(conf);
     }
@@ -690,12 +694,7 @@ public class NameNode implements NameNodeStatusMXBean {
       httpServer.setNameNodeAddress(getNameNodeAddress());
       httpServer.setFSImage(getFSImage());
     }
-    
-    pauseMonitor = new JvmPauseMonitor();
-    pauseMonitor.init(conf);
-    pauseMonitor.start();
-    metrics.getJvmMetrics().setPauseMonitor(pauseMonitor);
-    
+
     startCommonServices(conf);
     startMetricsLogger(conf);
   }
@@ -1022,6 +1021,22 @@ public class NameNode implements NameNodeStatusMXBean {
   }
 
   /**
+   * @return NameNodeHttpServer, used by unit tests to ensure a full shutdown,
+   * so that no bind exception is thrown during restart.
+   */
+  @VisibleForTesting
+  public void joinHttpServer() {
+    if (httpServer != null) {
+      try {
+        httpServer.join();
+      } catch (InterruptedException e) {
+        LOG.info("Caught InterruptedException joining NameNodeHttpServer", e);
+        Thread.currentThread().interrupt();
+      }
+    }
+  }
+
+  /**
    * Verify that configured directories exist, then
    * Interactively confirm that formatting is desired 
    * for each existing directory and format them.
@@ -1248,7 +1263,6 @@ public class NameNode implements NameNodeStatusMXBean {
           newSharedEditLog.logEdit(op);
 
           if (op.opCode == FSEditLogOpCodes.OP_END_LOG_SEGMENT) {
-            newSharedEditLog.logSync();
             newSharedEditLog.endCurrentLogSegment(false);
             LOG.debug("ending log segment because of END_LOG_SEGMENT op in "
                 + stream);

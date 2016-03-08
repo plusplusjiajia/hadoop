@@ -19,6 +19,9 @@
 package org.apache.hadoop.minikdc;
 
 import org.apache.commons.io.Charsets;
+import org.apache.directory.server.protocol.shared.transport.AbstractTransport;
+import org.apache.directory.server.protocol.shared.transport.TcpTransport;
+import org.apache.directory.server.protocol.shared.transport.UdpTransport;
 import org.apache.kerby.kerberos.kerb.KrbException;
 import org.apache.kerby.kerberos.kerb.server.KdcConfigKey;
 import org.apache.kerby.kerberos.kerb.server.SimpleKdcServer;
@@ -30,9 +33,14 @@ import java.io.FileInputStream;
 import java.io.InputStreamReader;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
-import java.net.InetAddress;
-import java.net.ServerSocket;
-import java.util.*;
+import java.net.InetSocketAddress;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Properties;
+import java.util.Set;
 
 /**
  * Mini KDC based on Apache Directory Server that can be embedded in testcases
@@ -231,12 +239,6 @@ public class MiniKdc {
     LOG.info("---------------------------------------------------------------");
     this.conf = conf;
     port = Integer.parseInt(conf.getProperty(KDC_PORT));
-    if (port == 0) {
-      ServerSocket ss = new ServerSocket(0, 1, InetAddress.getByName
-              (conf.getProperty(KDC_BIND_ADDRESS)));
-      port = ss.getLocalPort();
-      ss.close();
-    }
     String orgName= conf.getProperty(ORG_NAME);
     String orgDomain = conf.getProperty(ORG_DOMAIN);
     realm = orgName.toUpperCase(Locale.ENGLISH) + "."

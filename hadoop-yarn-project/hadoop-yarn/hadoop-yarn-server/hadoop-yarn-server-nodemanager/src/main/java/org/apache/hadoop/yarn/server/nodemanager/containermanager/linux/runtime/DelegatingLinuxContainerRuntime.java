@@ -45,7 +45,6 @@ public class DelegatingLinuxContainerRuntime implements LinuxContainerRuntime {
       throws ContainerExecutionException {
     PrivilegedOperationExecutor privilegedOperationExecutor =
         PrivilegedOperationExecutor.getInstance(conf);
-
     defaultLinuxContainerRuntime = new DefaultLinuxContainerRuntime(
         privilegedOperationExecutor);
     defaultLinuxContainerRuntime.initialize(conf);

@@ -88,7 +88,7 @@ class CGroupsHandlerImpl implements CGroupsHandler {
     this.controllerPaths = new HashMap<>();
     this.rwLock = new ReentrantReadWriteLock();
     this.privilegedOperationExecutor = privilegedOperationExecutor;
-    this.clock = new SystemClock();
+    this.clock = SystemClock.getInstance();
 
     init();
   }
@@ -247,7 +247,7 @@ class CGroupsHandlerImpl implements CGroupsHandler {
             .append(controller.getName()).append('=').append(controllerPath);
         PrivilegedOperation.OperationType opType = PrivilegedOperation
             .OperationType.MOUNT_CGROUPS;
-        PrivilegedOperation op = new PrivilegedOperation(opType, (String) null);
+        PrivilegedOperation op = new PrivilegedOperation(opType);
 
         op.appendArgs(hierarchy, cGroupKV.toString());
         LOG.info("Mounting controller " + controller.getName() + " at " +

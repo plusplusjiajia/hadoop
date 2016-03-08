@@ -685,18 +685,7 @@ public class DFSOutputStream extends FSOutputSummer
    * received from datanodes.
    */
   protected void flushInternal() throws IOException {
-    long toWaitFor;
-    synchronized (this) {
-      dfsClient.checkOpen();
-      checkClosed();
-      //
-      // If there is data in the current buffer, send it across
-      //
-      getStreamer().queuePacket(currentPacket);
-      currentPacket = null;
-      toWaitFor = getStreamer().getLastQueuedSeqno();
-    }
-
+    long toWaitFor = flushInternalWithoutWaitingAck();
     getStreamer().waitForAckedSeqno(toWaitFor);
   }
 
@@ -781,14 +770,19 @@ public class DFSOutputStream extends FSOutputSummer
       flushInternal();             // flush all data to Datanodes
       // get last block before destroying the streamer
       ExtendedBlock lastBlock = getStreamer().getBlock();
-      closeThreads(false);
+
       try (TraceScope ignored =
                dfsClient.getTracer().newScope("completeFile")) {
         completeFile(lastBlock);
       }
     } catch (ClosedChannelException ignored) {
     } finally {
-      setClosed();
+      // Failures may happen when flushing data.
+      // Streamers may keep waiting for the new block information.
+      // Thus need to force closing these threads.
+      // Don't need to call setClosed() because closeThreads(true)
+      // calls setClosed() in the finally block.
+      closeThreads(true);
     }
   }
 
@@ -862,6 +856,21 @@ public class DFSOutputStream extends FSOutputSummer
    */
   synchronized Token<BlockTokenIdentifier> getBlockToken() {
     return getStreamer().getBlockToken();
+  }
+
+  protected long flushInternalWithoutWaitingAck() throws IOException {
+    long toWaitFor;
+    synchronized (this) {
+      dfsClient.checkOpen();
+      checkClosed();
+      //
+      // If there is data in the current buffer, send it across
+      //
+      getStreamer().queuePacket(currentPacket);
+      currentPacket = null;
+      toWaitFor = getStreamer().getLastQueuedSeqno();
+    }
+    return toWaitFor;
   }
 
   @Override

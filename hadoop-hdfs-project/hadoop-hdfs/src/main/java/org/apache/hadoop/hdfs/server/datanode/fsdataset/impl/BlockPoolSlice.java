@@ -30,6 +30,7 @@ import java.io.RandomAccessFile;
 import java.io.Writer;
 import java.util.Iterator;
 import java.util.Scanner;
+import java.util.concurrent.atomic.AtomicLong;
 
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.logging.Log;
@@ -55,7 +56,7 @@ import org.apache.hadoop.util.DataChecksum;
 import org.apache.hadoop.util.DiskChecker;
 import org.apache.hadoop.util.DiskChecker.DiskErrorException;
 import org.apache.hadoop.util.ShutdownHookManager;
-import org.apache.hadoop.util.Time;
+import org.apache.hadoop.util.Timer;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.io.Files;
@@ -79,12 +80,16 @@ class BlockPoolSlice {
   private final File rbwDir; // directory store RBW replica
   private final File tmpDir; // directory store Temporary replica
   private final int ioFileBufferSize;
-  private static final String DU_CACHE_FILE = "dfsUsed";
+  @VisibleForTesting
+  public static final String DU_CACHE_FILE = "dfsUsed";
   private volatile boolean dfsUsedSaved = false;
   private static final int SHUTDOWN_HOOK_PRIORITY = 30;
   private final boolean deleteDuplicateReplicas;
   private static final String REPLICA_CACHE_FILE = "replicas";
   private final long replicaCacheExpiry = 5*60*1000;
+  private AtomicLong numOfBlocks = new AtomicLong();
+  private final long cachedDfsUsedCheckTime;
+  private final Timer timer;
 
   // TODO:FEDERATION scalability issue - a thread per DU is needed
   private final DU dfsUsage;
@@ -95,10 +100,11 @@ class BlockPoolSlice {
    * @param volume {@link FsVolumeImpl} to which this BlockPool belongs to
    * @param bpDir directory corresponding to the BlockPool
    * @param conf configuration
+   * @param timer include methods for getting time
    * @throws IOException
    */
   BlockPoolSlice(String bpid, FsVolumeImpl volume, File bpDir,
-      Configuration conf) throws IOException {
+      Configuration conf, Timer timer) throws IOException {
     this.bpid = bpid;
     this.volume = volume;
     this.currentDir = new File(bpDir, DataStorage.STORAGE_DIR_CURRENT); 
@@ -116,6 +122,12 @@ class BlockPoolSlice {
     this.deleteDuplicateReplicas = conf.getBoolean(
         DFSConfigKeys.DFS_DATANODE_DUPLICATE_REPLICA_DELETION,
         DFSConfigKeys.DFS_DATANODE_DUPLICATE_REPLICA_DELETION_DEFAULT);
+
+    this.cachedDfsUsedCheckTime =
+        conf.getLong(
+            DFSConfigKeys.DFS_DN_CACHED_DFSUSED_CHECK_INTERVAL_MS,
+            DFSConfigKeys.DFS_DN_CACHED_DFSUSED_CHECK_INTERVAL_DEFAULT_MS);
+    this.timer = timer;
 
     // Files that were being written when the datanode was last shutdown
     // are now moved back to the data directory. It is possible that
@@ -187,11 +199,13 @@ class BlockPoolSlice {
     dfsUsage.incDfsUsed(value);
   }
   
-   /**
-   * Read in the cached DU value and return it if it is less than 600 seconds
-   * old (DU update interval). Slight imprecision of dfsUsed is not critical
-   * and skipping DU can significantly shorten the startup time.
-   * If the cached value is not available or too old, -1 is returned.
+  /**
+   * Read in the cached DU value and return it if it is less than
+   * cachedDfsUsedCheckTime which is set by
+   * dfs.datanode.cached-dfsused.check.interval.ms parameter. Slight imprecision
+   * of dfsUsed is not critical and skipping DU can significantly shorten the
+   * startup time. If the cached value is not available or too old, -1 is
+   * returned.
    */
   long loadDfsUsed() {
     long cachedDfsUsed;
@@ -219,7 +233,7 @@ class BlockPoolSlice {
       }
 
       // Return the cached value if mtime is okay.
-      if (mtime > 0 && (Time.now() - mtime < 600000L)) {
+      if (mtime > 0 && (timer.now() - mtime < cachedDfsUsedCheckTime)) {
         FsDatasetImpl.LOG.info("Cached dfsUsed found for " + currentDir + ": " +
             cachedDfsUsed);
         return cachedDfsUsed;
@@ -245,7 +259,7 @@ class BlockPoolSlice {
       try (Writer out = new OutputStreamWriter(
           new FileOutputStream(outFile), "UTF-8")) {
         // mtime is written last, so that truncated writes won't be valid.
-        out.write(Long.toString(used) + " " + Long.toString(Time.now()));
+        out.write(Long.toString(used) + " " + Long.toString(timer.now()));
         out.flush();
       }
     } catch (IOException ioe) {
@@ -261,7 +275,11 @@ class BlockPoolSlice {
    */
   File createTmpFile(Block b) throws IOException {
     File f = new File(tmpDir, b.getBlockName());
-    return DatanodeUtil.createTmpFile(b, f);
+    File tmpFile = DatanodeUtil.createTmpFile(b, f);
+    // If any exception during creation, its expected that counter will not be
+    // incremented, So no need to decrement
+    incrNumBlocks();
+    return tmpFile;
   }
 
   /**
@@ -270,7 +288,11 @@ class BlockPoolSlice {
    */
   File createRbwFile(Block b) throws IOException {
     File f = new File(rbwDir, b.getBlockName());
-    return DatanodeUtil.createTmpFile(b, f);
+    File rbwFile = DatanodeUtil.createTmpFile(b, f);
+    // If any exception during creation, its expected that counter will not be
+    // incremented, So no need to decrement
+    incrNumBlocks();
+    return rbwFile;
   }
 
   File addFinalizedBlock(Block b, File f) throws IOException {
@@ -434,7 +456,7 @@ class BlockPoolSlice {
       try {
         sc = new Scanner(restartMeta, "UTF-8");
         // The restart meta file exists
-        if (sc.hasNextLong() && (sc.nextLong() > Time.now())) {
+        if (sc.hasNextLong() && (sc.nextLong() > timer.now())) {
           // It didn't expire. Load the replica as a RBW.
           // We don't know the expected block length, so just use 0
           // and don't reserve any more space for writes.
@@ -480,6 +502,9 @@ class BlockPoolSlice {
           (FsVolumeImpl) newReplica.getVolume(), 0);
     } else {
       lazyWriteReplicaMap.discardReplica(bpid, blockId, false);
+    }
+    if (oldReplica == null) {
+      incrNumBlocks();
     }
   }
   
@@ -812,5 +837,17 @@ class BlockPoolSlice {
             tmpFile.getPath());
       }
     }
+  }
+
+  void incrNumBlocks() {
+    numOfBlocks.incrementAndGet();
+  }
+
+  void decrNumBlocks() {
+    numOfBlocks.decrementAndGet();
+  }
+
+  public long getNumOfBlocks() {
+    return numOfBlocks.get();
   }
 }

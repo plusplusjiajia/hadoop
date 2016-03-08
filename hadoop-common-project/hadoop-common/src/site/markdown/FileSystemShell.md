@@ -12,55 +12,12 @@
   limitations under the License. See accompanying LICENSE file.
 -->
 
-* [Overview](#Overview)
-    * [appendToFile](#appendToFile)
-    * [cat](#cat)
-    * [checksum](#checksum)
-    * [chgrp](#chgrp)
-    * [chmod](#chmod)
-    * [chown](#chown)
-    * [copyFromLocal](#copyFromLocal)
-    * [copyToLocal](#copyToLocal)
-    * [count](#count)
-    * [cp](#cp)
-    * [createSnapshot](#createSnapshot)
-    * [deleteSnapshot](#deleteSnapshot)
-    * [df](#df)
-    * [du](#du)
-    * [dus](#dus)
-    * [expunge](#expunge)
-    * [find](#find)
-    * [get](#get)
-    * [getfacl](#getfacl)
-    * [getfattr](#getfattr)
-    * [getmerge](#getmerge)
-    * [help](#help)
-    * [ls](#ls)
-    * [lsr](#lsr)
-    * [mkdir](#mkdir)
-    * [moveFromLocal](#moveFromLocal)
-    * [moveToLocal](#moveToLocal)
-    * [mv](#mv)
-    * [put](#put)
-    * [renameSnapshot](#renameSnapshot)
-    * [rm](#rm)
-    * [rmdir](#rmdir)
-    * [rmr](#rmr)
-    * [setfacl](#setfacl)
-    * [setfattr](#setfattr)
-    * [setrep](#setrep)
-    * [stat](#stat)
-    * [tail](#tail)
-    * [test](#test)
-    * [text](#text)
-    * [touchz](#touchz)
-    * [truncate](#truncate)
-    * [usage](#usage)
+<!-- MACRO{toc|fromDepth=0|toDepth=3} -->
 
 Overview
 ========
 
-The File System (FS) shell includes various shell-like commands that directly interact with the Hadoop Distributed File System (HDFS) as well as other file systems that Hadoop supports, such as Local FS, HFTP FS, S3 FS, and others. The FS shell is invoked by:
+The File System (FS) shell includes various shell-like commands that directly interact with the Hadoop Distributed File System (HDFS) as well as other file systems that Hadoop supports, such as Local FS, WebHDFS, S3 FS, and others. The FS shell is invoked by:
 
     bin/hadoop fs <args>
 
@@ -170,11 +127,15 @@ Similar to get command, except that the destination is restricted to a local fil
 count
 -----
 
-Usage: `hadoop fs -count [-q] [-h] [-v] <paths> `
+Usage: `hadoop fs -count [-q] [-h] [-v] [-t [<storage type>]] [-u] <paths> `
 
-Count the number of directories, files and bytes under the paths that match the specified file pattern. The output columns with -count are: DIR\_COUNT, FILE\_COUNT, CONTENT\_SIZE, PATHNAME
+Count the number of directories, files and bytes under the paths that match the specified file pattern. Get the quota and the usage. The output columns with -count are: DIR\_COUNT, FILE\_COUNT, CONTENT\_SIZE, PATHNAME
 
 The output columns with -count -q are: QUOTA, REMAINING\_QUOTA, SPACE\_QUOTA, REMAINING\_SPACE\_QUOTA, DIR\_COUNT, FILE\_COUNT, CONTENT\_SIZE, PATHNAME
+
+The output columns with -count -u are: QUOTA, REMAINING\_QUOTA, SPACE\_QUOTA, REMAINING\_SPACE\_QUOTA
+
+The -t option shows the quota and usage for each storage type.
 
 The -h option shows sizes in human readable format.
 
@@ -186,6 +147,9 @@ Example:
 * `hadoop fs -count -q hdfs://nn1.example.com/file1`
 * `hadoop fs -count -q -h hdfs://nn1.example.com/file1`
 * `hadoop fs -count -q -h -v hdfs://nn1.example.com/file1`
+* `hadoop fs -count -u hdfs://nn1.example.com/file1`
+* `hadoop fs -count -u -h hdfs://nn1.example.com/file1`
+* `hadoop fs -count -u -h -v hdfs://nn1.example.com/file1`
 
 Exit Code:
 
@@ -251,6 +215,10 @@ Options:
 * The -s option will result in an aggregate summary of file lengths being displayed, rather than the individual files.
 * The -h option will format file sizes in a "human-readable" fashion (e.g 64.0m instead of 67108864)
 
+The du returns three columns with the following format:
+
+    size disk_space_consumed_with_all_replicas full_path_name
+
 Example:
 
 * `hadoop fs -du /user/hadoop/dir1 /user/hadoop/file1 hdfs://nn.example.com/user/hadoop/dir1`
@@ -271,7 +239,22 @@ expunge
 
 Usage: `hadoop fs -expunge`
 
-If trash is enabled when a file is deleted, HDFS instead moves the deleted file to a trash directory. This command causes HDFS to permanently delete files from the trash that are older than the retention threshold. Refer to the [File Deletes and Undeletes Guide](../hadoop-hdfs/HdfsDesign.html#File_Deletes_and_Undeletes) in Space Reclamation section for more information on the Trash feature.
+Permanently delete files in checkpoints older than the retention threshold
+from trash directory, and create new checkpoint.
+
+When checkpoint is created,
+recently deleted files in trash are moved under the checkpoint.
+Files in checkpoints older than `fs.trash.interval`
+will be permanently deleted on the next invocation of `-expunge` command.
+
+If the file system supports the feature,
+users can configure to create and delete checkpoints periodically
+by the parameter stored as `fs.trash.checkpoint.interval` (in core-site.xml).
+This value should be smaller or equal to `fs.trash.interval`.
+
+Refer to the
+[HDFS Architecture guide](../hadoop-hdfs/HdfsDesign.html#File_Deletes_and_Undeletes)
+for more information about trash feature of HDFS.
 
 find
 ----
@@ -375,6 +358,7 @@ getmerge
 Usage: `hadoop fs -getmerge [-nl] <src> <localdst>`
 
 Takes a source directory and a destination file as input and concatenates files in src into the destination local file. Optionally -nl can be set to enable adding a newline character (LF) at the end of each file.
+-skip-empty-file can be used to avoid unwanted newline characters in case of empty files.
 
 Examples:
 
@@ -512,6 +496,15 @@ rm
 Usage: `hadoop fs -rm [-f] [-r |-R] [-skipTrash] URI [URI ...]`
 
 Delete files specified as args.
+
+If trash is enabled, file system instead moves the deleted file to a trash directory
+(given by [FileSystem#getTrashRoot](../../api/org/apache/hadoop/fs/FileSystem.html)).
+
+Currently, the trash feature is disabled by default.
+User can enable trash by setting a value greater than zero for parameter
+`fs.trash.interval` (in core-site.xml).
+
+See [expunge](#expunge) about deletion of files in trash.
 
 Options:
 

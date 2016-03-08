@@ -109,6 +109,7 @@ public class SchedulerApplicationAttempt implements SchedulableEntity {
   private LogAggregationContext logAggregationContext;
 
   private volatile Priority appPriority = null;
+  private boolean isAttemptRecovering;
 
   protected ResourceUsage attemptResourceUsage = new ResourceUsage();
   private AtomicLong firstAllocationRequestSentTime = new AtomicLong(0);
@@ -243,7 +244,8 @@ public class SchedulerApplicationAttempt implements SchedulableEntity {
   }
 
   public synchronized int getTotalRequiredResources(Priority priority) {
-    return getResourceRequest(priority, ResourceRequest.ANY).getNumContainers();
+    ResourceRequest request = getResourceRequest(priority, ResourceRequest.ANY);
+    return request == null ? 0 : request.getNumContainers();
   }
 
   public synchronized Resource getResource(Priority priority) {
@@ -321,7 +323,7 @@ public class SchedulerApplicationAttempt implements SchedulableEntity {
     return false;
   }
   
-  public synchronized void recoverResourceRequests(
+  public synchronized void recoverResourceRequestsForContainer(
       List<ResourceRequest> requests) {
     if (!isStopped) {
       appSchedulingInfo.updateResourceRequests(requests, true);
@@ -331,7 +333,7 @@ public class SchedulerApplicationAttempt implements SchedulableEntity {
   public synchronized void stop(RMAppAttemptState rmAppAttemptFinalState) {
     // Cleanup all scheduling information
     isStopped = true;
-    appSchedulingInfo.stop(rmAppAttemptFinalState);
+    appSchedulingInfo.stop();
   }
 
   public synchronized boolean isStopped() {
@@ -625,8 +627,10 @@ public class SchedulerApplicationAttempt implements SchedulableEntity {
 
   
   public synchronized void addSchedulingOpportunity(Priority priority) {
-    schedulingOpportunities.setCount(priority,
-        schedulingOpportunities.count(priority) + 1);
+    int count = schedulingOpportunities.count(priority);
+    if (count < Integer.MAX_VALUE) {
+      schedulingOpportunities.setCount(priority, count + 1);
+    }
   }
   
   public synchronized void subtractSchedulingOpportunity(Priority priority) {
@@ -659,6 +663,11 @@ public class SchedulerApplicationAttempt implements SchedulableEntity {
       long currentTimeMs) {
     lastScheduledContainer.put(priority, currentTimeMs);
     schedulingOpportunities.setCount(priority, 0);
+  }
+
+  @VisibleForTesting
+  void setSchedulingOpportunities(Priority priority, int count) {
+    schedulingOpportunities.setCount(priority, count);
   }
 
   synchronized AggregateAppResourceUsage getRunningAggregateAppResourceUsage() {
@@ -694,17 +703,20 @@ public class SchedulerApplicationAttempt implements SchedulableEntity {
         Resources.clone(attemptResourceUsage.getReserved());
     Resource cluster = rmContext.getScheduler().getClusterResource();
     ResourceCalculator calc = rmContext.getScheduler().getResourceCalculator();
-    float queueUsagePerc = calc.divide(cluster, usedResourceClone, Resources
-        .multiply(cluster, queue.getQueueInfo(false, false).getCapacity()))
-        * 100;
-    float clusterUsagePerc =
-        calc.divide(cluster, usedResourceClone, cluster) * 100;
+    float queueUsagePerc = 0.0f;
+    float clusterUsagePerc = 0.0f;
+    if (!calc.isInvalidDivisor(cluster)) {
+      queueUsagePerc =
+          calc.divide(cluster, usedResourceClone, Resources.multiply(cluster,
+              queue.getQueueInfo(false, false).getCapacity())) * 100;
+      clusterUsagePerc = calc.divide(cluster, usedResourceClone, cluster) * 100;
+    }
     return ApplicationResourceUsageReport.newInstance(liveContainers.size(),
         reservedContainers.size(), usedResourceClone, reservedResourceClone,
         Resources.add(usedResourceClone, reservedResourceClone),
         runningResourceUsage.getMemorySeconds(),
-        runningResourceUsage.getVcoreSeconds(),
-        queueUsagePerc, clusterUsagePerc);
+        runningResourceUsage.getVcoreSeconds(), queueUsagePerc,
+        clusterUsagePerc);
   }
 
   public synchronized Map<ContainerId, RMContainer> getLiveContainersMap() {
@@ -852,7 +864,7 @@ public class SchedulerApplicationAttempt implements SchedulableEntity {
   }
   
   @Override
-  public synchronized ResourceUsage getSchedulingResourceUsage() {
+  public ResourceUsage getSchedulingResourceUsage() {
     return attemptResourceUsage;
   }
   
@@ -955,6 +967,15 @@ public class SchedulerApplicationAttempt implements SchedulableEntity {
     // Give the specific information which might be applicable for the
     // respective scheduler
     // queue's resource usage for specific partition
+  }
+
+  @Override
+  public boolean isRecovering() {
+    return isAttemptRecovering;
+  }
+
+  protected void setAttemptRecovering(boolean isRecovering) {
+    this.isAttemptRecovering = isRecovering;
   }
 
   public static enum AMState {

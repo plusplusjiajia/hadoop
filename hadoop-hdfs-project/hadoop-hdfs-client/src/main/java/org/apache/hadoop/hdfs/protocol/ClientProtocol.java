@@ -30,6 +30,7 @@ import org.apache.hadoop.fs.ContentSummary;
 import org.apache.hadoop.fs.CreateFlag;
 import org.apache.hadoop.fs.FsServerDefaults;
 import org.apache.hadoop.fs.Options;
+import org.apache.hadoop.fs.QuotaUsage;
 import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.fs.XAttr;
 import org.apache.hadoop.fs.XAttrSetFlag;
@@ -279,6 +280,19 @@ public interface ClientProtocol {
   @Idempotent
   void setStoragePolicy(String src, String policyName)
       throws IOException;
+
+  /**
+   * Unset the storage policy set for a given file or directory.
+   * @param src Path of an existing file/directory.
+   * @throws SnapshotAccessControlException If access is denied
+   * @throws org.apache.hadoop.fs.UnresolvedLinkException if <code>src</code>
+   *           contains a symlink
+   * @throws java.io.FileNotFoundException If file/dir <code>src</code> is not
+   *           found
+   * @throws QuotaExceededException If changes violate the quota restriction
+   */
+  @Idempotent
+  void unsetStoragePolicy(String src) throws IOException;
 
   /**
    * Get the storage policy for a file/directory.
@@ -713,7 +727,8 @@ public interface ClientProtocol {
   int GET_STATS_MISSING_BLOCKS_IDX = 5;
   int GET_STATS_MISSING_REPL_ONE_BLOCKS_IDX = 6;
   int GET_STATS_BYTES_IN_FUTURE_BLOCKS_IDX = 7;
-  int STATS_ARRAY_LENGTH = 8;
+  int GET_STATS_PENDING_DELETION_BLOCKS_IDX = 8;
+  int STATS_ARRAY_LENGTH = 9;
 
   /**
    * Get a set of statistics about the filesystem.
@@ -728,6 +743,7 @@ public interface ClientProtocol {
    * <li> [6] contains number of blocks which have replication factor
    *          1 and have lost the only replica. </li>
    * <li> [7] contains number of bytes  that are at risk for deletion. </li>
+   * <li> [8] contains number of pending deletion blocks. </li>
    * </ul>
    * Use public constants like {@link #GET_STATS_CAPACITY_IDX} in place of
    * actual numbers to index into the array.
@@ -1514,4 +1530,17 @@ public interface ClientProtocol {
    */
   @Idempotent
   ErasureCodingPolicy getErasureCodingPolicy(String src) throws IOException;
+
+  /**
+   * Get {@link QuotaUsage} rooted at the specified directory.
+   * @param path The string representation of the path
+   *
+   * @throws AccessControlException permission denied
+   * @throws java.io.FileNotFoundException file <code>path</code> is not found
+   * @throws org.apache.hadoop.fs.UnresolvedLinkException if <code>path</code>
+   *         contains a symlink.
+   * @throws IOException If an I/O error occurred
+   */
+  @Idempotent
+  QuotaUsage getQuotaUsage(String path) throws IOException;
 }

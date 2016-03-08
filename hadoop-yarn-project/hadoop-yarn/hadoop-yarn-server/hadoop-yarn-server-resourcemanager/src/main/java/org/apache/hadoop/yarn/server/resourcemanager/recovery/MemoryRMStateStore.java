@@ -31,7 +31,7 @@ import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.ReservationId;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
-import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.ReservationAllocationStateProto;
+import org.apache.hadoop.yarn.proto.YarnProtos.ReservationAllocationStateProto;
 import org.apache.hadoop.yarn.security.client.RMDelegationTokenIdentifier;
 import org.apache.hadoop.yarn.server.records.Version;
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.AMRMTokenSecretManagerState;
@@ -139,6 +139,19 @@ public class MemoryRMStateStore extends RMStateStore {
     LOG.info("Updating final state " + attemptState.getState()
         + " for attempt: " + attemptState.getAttemptId());
     appState.attempts.put(attemptState.getAttemptId(), attemptState);
+  }
+
+  @Override
+  public synchronized void removeApplicationAttemptInternal(
+      ApplicationAttemptId appAttemptId) throws Exception {
+    ApplicationStateData appState =
+        state.getApplicationState().get(appAttemptId.getApplicationId());
+    ApplicationAttemptStateData attemptState =
+        appState.attempts.remove(appAttemptId);
+    LOG.info("Removing state for attempt: " + appAttemptId);
+    if (attemptState == null) {
+      throw new YarnRuntimeException("Application doesn't exist");
+    }
   }
 
   @Override

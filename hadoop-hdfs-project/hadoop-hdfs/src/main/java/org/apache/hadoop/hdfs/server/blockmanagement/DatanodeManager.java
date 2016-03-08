@@ -17,7 +17,7 @@
  */
 package org.apache.hadoop.hdfs.server.blockmanagement;
 
-import static org.apache.hadoop.hdfs.server.protocol.DatanodeProtocol.DNA_ERASURE_CODING_RECOVERY;
+import static org.apache.hadoop.hdfs.server.protocol.DatanodeProtocol.DNA_ERASURE_CODING_RECONSTRUCTION;
 import static org.apache.hadoop.util.Time.monotonicNow;
 
 import com.google.common.annotations.VisibleForTesting;
@@ -40,8 +40,9 @@ import org.apache.hadoop.hdfs.server.namenode.CachedBlock;
 import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.apache.hadoop.hdfs.server.namenode.Namesystem;
 import org.apache.hadoop.hdfs.server.protocol.*;
-import org.apache.hadoop.hdfs.server.protocol.BlockECRecoveryCommand.BlockECRecoveryInfo;
+import org.apache.hadoop.hdfs.server.protocol.BlockECReconstructionCommand.BlockECReconstructionInfo;
 import org.apache.hadoop.hdfs.server.protocol.BlockRecoveryCommand.RecoveringBlock;
+import org.apache.hadoop.hdfs.server.protocol.BlockRecoveryCommand.RecoveringStripedBlock;
 import org.apache.hadoop.ipc.Server;
 import org.apache.hadoop.net.*;
 import org.apache.hadoop.net.NetworkTopology.InvalidTopologyException;
@@ -412,6 +413,15 @@ public class DatanodeManager {
     return host2DatanodeMap.getDatanodeByXferAddr(host, xferPort);
   }
 
+  /** @return the datanode descriptors for all nodes. */
+  public Set<DatanodeDescriptor> getDatanodes() {
+    final Set<DatanodeDescriptor> datanodes;
+    synchronized (this) {
+      datanodes = new HashSet<>(datanodeMap.values());
+    }
+    return datanodes;
+  }
+
   /** @return the Host2NodesMap */
   public Host2NodesMap getHost2DatanodeMap() {
     return this.host2DatanodeMap;
@@ -504,6 +514,7 @@ public class DatanodeManager {
   public DatanodeStorageInfo[] getDatanodeStorageInfos(
       DatanodeID[] datanodeID, String[] storageIDs,
       String format, Object... args) throws UnregisteredNodeException {
+    storageIDs = storageIDs == null ? new String[0] : storageIDs;
     if (datanodeID.length != storageIDs.length) {
       final String err = (storageIDs.length == 0?
           "Missing storageIDs: It is likely that the HDFS client,"
@@ -524,9 +535,11 @@ public class DatanodeManager {
         continue;
       }
       final DatanodeDescriptor dd = getDatanode(datanodeID[i]);
-      storages[i] = dd.getStorageInfo(storageIDs[i]);
+      if (dd != null) {
+        storages[i] = dd.getStorageInfo(storageIDs[i]);
+      }
     }
-    return storages; 
+    return storages;
   }
 
   /** Prints information about all datanodes. */
@@ -959,6 +972,7 @@ public class DatanodeManager {
         // no need to update its timestamp
         // because its is done when the descriptor is created
         heartbeatManager.addDatanode(nodeDescr);
+        heartbeatManager.updateDnStat(nodeDescr);
         incrementVersionCount(nodeReg.getSoftwareVersion());
         startDecommissioningIfExcluded(nodeDescr);
         success = true;
@@ -1366,6 +1380,10 @@ public class DatanodeManager {
       } else {
         rBlock = new RecoveringBlock(primaryBlock, recoveryInfos,
             uc.getBlockRecoveryId());
+        if (b.isStriped()) {
+          rBlock = new RecoveringStripedBlock(rBlock, uc.getBlockIndices(),
+              ((BlockInfoStriped) b).getErasureCodingPolicy());
+        }
       }
       brCommand.add(rBlock);
     }
@@ -1446,11 +1464,11 @@ public class DatanodeManager {
           pendingList));
     }
     // check pending erasure coding tasks
-    List<BlockECRecoveryInfo> pendingECList = nodeinfo.getErasureCodeCommand(
-        maxTransfers);
+    List<BlockECReconstructionInfo> pendingECList = nodeinfo
+        .getErasureCodeCommand(maxTransfers);
     if (pendingECList != null) {
-      cmds.add(new BlockECRecoveryCommand(DNA_ERASURE_CODING_RECOVERY,
-          pendingECList));
+      cmds.add(new BlockECReconstructionCommand(
+          DNA_ERASURE_CODING_RECONSTRUCTION, pendingECList));
     }
     // check block invalidation
     Block[] blks = nodeinfo.getInvalidateBlocks(blockInvalidateLimit);
@@ -1475,6 +1493,47 @@ public class DatanodeManager {
     }
 
     return new DatanodeCommand[0];
+  }
+
+  /**
+   * Handles a lifeline message sent by a DataNode.
+   *
+   * @param nodeReg registration info for DataNode sending the lifeline
+   * @param reports storage reports from DataNode
+   * @param blockPoolId block pool ID
+   * @param cacheCapacity cache capacity at DataNode
+   * @param cacheUsed cache used at DataNode
+   * @param xceiverCount estimated count of transfer threads running at DataNode
+   * @param maxTransfers count of transfers running at DataNode
+   * @param failedVolumes count of failed volumes at DataNode
+   * @param volumeFailureSummary info on failed volumes at DataNode
+   * @throws IOException if there is an error
+   */
+  public void handleLifeline(DatanodeRegistration nodeReg,
+      StorageReport[] reports, String blockPoolId, long cacheCapacity,
+      long cacheUsed, int xceiverCount, int maxTransfers, int failedVolumes,
+      VolumeFailureSummary volumeFailureSummary) throws IOException {
+    if (LOG.isDebugEnabled()) {
+      LOG.debug("Received handleLifeline from nodeReg = " + nodeReg);
+    }
+    DatanodeDescriptor nodeinfo = getDatanode(nodeReg);
+    if (nodeinfo == null) {
+      // This is null if the DataNode has not yet registered.  We expect this
+      // will never happen, because the DataNode has logic to prevent sending
+      // lifeline messages until after initial registration is successful.
+      // Lifeline message handling can't send commands back to the DataNode to
+      // tell it to register, so simply exit.
+      return;
+    }
+    if (nodeinfo.isDisallowed()) {
+      // This is highly unlikely, because heartbeat handling is much more
+      // frequent and likely would have already sent the disallowed error.
+      // Lifeline messages are not intended to send any kind of control response
+      // back to the DataNode, so simply exit.
+      return;
+    }
+    heartbeatManager.updateLifeline(nodeinfo, reports, cacheCapacity, cacheUsed,
+        xceiverCount, failedVolumes, volumeFailureSummary);
   }
 
   /**

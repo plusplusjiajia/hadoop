@@ -267,6 +267,7 @@ Usage:
               [-policy <policy>]
               [-exclude [-f <hosts-file> | <comma-separated list of hosts>]]
               [-include [-f <hosts-file> | <comma-separated list of hosts>]]
+              [-source [-f <hosts-file> | <comma-separated list of hosts>]]
               [-blockpools <comma-separated list of blockpool ids>]
               [-idleiterations <idleiterations>]
 
@@ -276,12 +277,15 @@ Usage:
 | `-threshold` \<threshold\> | Percentage of disk capacity. This overwrites the default threshold. |
 | `-exclude -f` \<hosts-file\> \| \<comma-separated list of hosts\> | Excludes the specified datanodes from being balanced by the balancer. |
 | `-include -f` \<hosts-file\> \| \<comma-separated list of hosts\> | Includes only the specified datanodes to be balanced by the balancer. |
+| `-source -f` \<hosts-file\> \| \<comma-separated list of hosts\> | Pick only the specified datanodes as source nodes. |
 | `-blockpools` \<comma-separated list of blockpool ids\> | The balancer will only run on blockpools included in this list. |
 | `-idleiterations` \<iterations\> | Maximum number of idle iterations before exit. This overwrites the default idleiterations(5). |
 
 Runs a cluster balancing utility. An administrator can simply press Ctrl-C to stop the rebalancing process. See [Balancer](./HdfsUserGuide.html#Balancer) for more details.
 
 Note that the `blockpool` policy is more strict than the `datanode` policy.
+
+Besides the above command options, a pinning feature is introduced starting from 2.7.0 to prevent certain replicas from getting moved by balancer/mover. This pinning feature is disabled by default, and can be enabled by configuration property "dfs.datanode.block-pinning.enabled". When enabled, this feature only affects blocks that are written to favored nodes specified in the create() call. This feature is useful when we want to maintain the data locality, for applications such as HBase regionserver.
 
 ### `cacheadmin`
 
@@ -442,6 +446,8 @@ Usage: `hdfs mover [-p <files/dirs> | -f <local file name>]`
 Runs the data migration utility. See [Mover](./ArchivalStorage.html#Mover_-_A_New_Data_Migration_Tool) for more details.
 
 Note that, when both -p and -f options are omitted, the default path is the root directory.
+
+In addition, a pinning feature is introduced starting from 2.7.0 to prevent certain replicas from getting moved by balancer/mover. This pinning feature is disabled by default, and can be enabled by configuration property "dfs.datanode.block-pinning.enabled". When enabled, this feature only affects blocks that are written to favored nodes specified in the create() call. This feature is useful when we want to maintain the data locality, for applications such as HBase regionserver.
 
 ### `namenode`
 

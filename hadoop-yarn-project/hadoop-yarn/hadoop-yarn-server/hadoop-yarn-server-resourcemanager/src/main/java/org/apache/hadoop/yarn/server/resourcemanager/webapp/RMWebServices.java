@@ -25,7 +25,6 @@ import java.security.AccessControlException;
 import java.security.Principal;
 import java.security.PrivilegedExceptionAction;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collection;
 import java.util.EnumSet;
 import java.util.HashMap;
@@ -40,6 +39,7 @@ import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import javax.ws.rs.Consumes;
 import javax.ws.rs.DELETE;
+import javax.ws.rs.DefaultValue;
 import javax.ws.rs.FormParam;
 import javax.ws.rs.GET;
 import javax.ws.rs.POST;
@@ -83,9 +83,12 @@ import org.apache.hadoop.yarn.api.protocolrecords.KillApplicationResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.MoveApplicationAcrossQueuesRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.RenewDelegationTokenRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.RenewDelegationTokenResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.ReservationListRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.ReservationListResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.SubmitApplicationRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.SubmitApplicationResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.UpdateApplicationPriorityRequest;
+import org.apache.hadoop.yarn.api.records.AMBlackListingRequest;
 import org.apache.hadoop.yarn.api.records.ApplicationAccessType;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.ApplicationReport;
@@ -93,6 +96,7 @@ import org.apache.hadoop.yarn.api.records.ApplicationSubmissionContext;
 import org.apache.hadoop.yarn.api.records.ContainerLaunchContext;
 import org.apache.hadoop.yarn.api.records.FinalApplicationStatus;
 import org.apache.hadoop.yarn.api.records.LocalResource;
+import org.apache.hadoop.yarn.api.records.LogAggregationContext;
 import org.apache.hadoop.yarn.api.records.NodeId;
 import org.apache.hadoop.yarn.api.records.NodeLabel;
 import org.apache.hadoop.yarn.api.records.NodeState;
@@ -124,6 +128,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CSQueue;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityScheduler;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.FairScheduler;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fifo.FifoScheduler;
+import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.AMBlackListingRequestInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.AppAttemptInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.AppAttemptsInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.AppInfo;
@@ -142,6 +147,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.FairSchedulerInf
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.FifoSchedulerInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.LabelsToNodesInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.LocalResourceInfo;
+import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.LogAggregationContextInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.NewApplication;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.NodeInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.NodeLabelInfo;
@@ -153,6 +159,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.NodesInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ReservationDefinitionInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ReservationDeleteRequestInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ReservationDeleteResponseInfo;
+import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ReservationListInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ReservationRequestInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ReservationRequestsInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ReservationSubmissionResponseInfo;
@@ -169,6 +176,9 @@ import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.SchedulerTypeInf
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.StatisticsItemInfo;
 import org.apache.hadoop.yarn.server.security.ApplicationACLsManager;
 import org.apache.hadoop.yarn.server.utils.BuilderUtils;
+import org.apache.hadoop.yarn.server.webapp.WebServices;
+import org.apache.hadoop.yarn.server.webapp.dao.ContainerInfo;
+import org.apache.hadoop.yarn.server.webapp.dao.ContainersInfo;
 import org.apache.hadoop.yarn.util.AdHocLogDumper;
 import org.apache.hadoop.yarn.util.ConverterUtils;
 import org.apache.hadoop.yarn.webapp.BadRequestException;
@@ -182,7 +192,7 @@ import com.google.inject.Singleton;
 
 @Singleton
 @Path("/ws/v1/cluster")
-public class RMWebServices {
+public class RMWebServices extends WebServices {
   private static final Log LOG =
       LogFactory.getLog(RMWebServices.class.getName());
   private static final String EMPTY = "";
@@ -201,6 +211,7 @@ public class RMWebServices {
 
   @Inject
   public RMWebServices(final ResourceManager rm, Configuration conf) {
+    super(rm.getClientRMService());
     this.rm = rm;
     this.conf = conf;
     isCentralizedNodeLabelConfiguration =
@@ -221,7 +232,8 @@ public class RMWebServices {
               ApplicationAccessType.VIEW_APP, app.getUser(),
               app.getApplicationId()) ||
             this.rm.getQueueACLsManager().checkAccess(callerUGI,
-              QueueACL.ADMINISTER_QUEUE, app.getQueue()))) {
+                QueueACL.ADMINISTER_QUEUE, app.getQueue(),
+                app.getApplicationId(), app.getName()))) {
       return false;
     }
     return true;
@@ -335,8 +347,8 @@ public class RMWebServices {
       }
     }
     
-    Collection<RMNode> rmNodes = RMServerUtils.queryRMNodes(this.rm.getRMContext(),
-        acceptedStates);
+    Collection<RMNode> rmNodes = RMServerUtils.queryRMNodes(
+        this.rm.getRMContext(), acceptedStates);
     NodesInfo nodesInfo = new NodesInfo();
     for (RMNode rmNode : rmNodes) {
       NodeInfo nodeInfo = new NodeInfo(rmNode, sched);
@@ -617,39 +629,6 @@ public class RMWebServices {
     return appStatInfo;
   }
 
-  private static Set<String> parseQueries(
-      Set<String> queries, boolean isState) {
-    Set<String> params = new HashSet<String>();
-    if (!queries.isEmpty()) {
-      for (String query : queries) {
-        if (query != null && !query.trim().isEmpty()) {
-          String[] paramStrs = query.split(",");
-          for (String paramStr : paramStrs) {
-            if (paramStr != null && !paramStr.trim().isEmpty()) {
-              if (isState) {
-                try {
-                  // enum string is in the uppercase
-                  YarnApplicationState.valueOf(
-                      StringUtils.toUpperCase(paramStr.trim()));
-                } catch (RuntimeException e) {
-                  YarnApplicationState[] stateArray =
-                      YarnApplicationState.values();
-                  String allAppStates = Arrays.toString(stateArray);
-                  throw new BadRequestException(
-                      "Invalid application-state " + paramStr.trim()
-                      + " specified. It should be one of " + allAppStates);
-                }
-              }
-              params.add(
-                  StringUtils.toLowerCase(paramStr.trim()));
-            }
-          }
-        }
-      }
-    }
-    return params;
-  }
-
   private static Map<YarnApplicationState, Map<String, Long>> buildScoreboard(
      Set<String> states, Set<String> types) {
     Map<YarnApplicationState, Map<String, Long>> scoreboard
@@ -726,6 +705,40 @@ public class RMWebServices {
     }
 
     return appAttemptsInfo;
+  }
+
+  @GET
+  @Path("/apps/{appid}/appattempts/{appattemptid}")
+  @Produces({ MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML })
+  @Override
+  public org.apache.hadoop.yarn.server.webapp.dao.AppAttemptInfo getAppAttempt(@Context HttpServletRequest req,
+      @Context HttpServletResponse res, @PathParam("appid") String appId,
+      @PathParam("appattemptid") String appAttemptId) {
+    init(res);
+    return super.getAppAttempt(req, res, appId, appAttemptId);
+  }
+
+  @GET
+  @Path("/apps/{appid}/appattempts/{appattemptid}/containers")
+  @Produces({ MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML })
+  @Override
+  public ContainersInfo getContainers(@Context HttpServletRequest req,
+      @Context HttpServletResponse res, @PathParam("appid") String appId,
+      @PathParam("appattemptid") String appAttemptId) {
+    init(res);
+    return super.getContainers(req, res, appId, appAttemptId);
+  }
+
+  @GET
+  @Path("/apps/{appid}/appattempts/{appattemptid}/containers/{containerid}")
+  @Produces({ MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML })
+  @Override
+  public ContainerInfo getContainer(@Context HttpServletRequest req,
+      @Context HttpServletResponse res, @PathParam("appid") String appId,
+      @PathParam("appattemptid") String appAttemptId,
+      @PathParam("containerid") String containerId) {
+    init(res);
+    return super.getContainer(req, res, appId, appAttemptId, containerId);
   }
 
   @GET
@@ -885,8 +898,7 @@ public class RMWebServices {
     NodeId nid = ConverterUtils.toNodeIdWithDefaultPort(nodeId);
     Map<NodeId, Set<String>> newLabelsForNode =
         new HashMap<NodeId, Set<String>>();
-    newLabelsForNode.put(nid,
-        new HashSet<String>(newNodeLabelsName));
+    newLabelsForNode.put(nid, new HashSet<String>(newNodeLabelsName));
 
     return replaceLabelsOnNode(newLabelsForNode, hsr,
         "/nodes/nodeid/replace-labels");
@@ -1405,6 +1417,7 @@ public class RMWebServices {
 
     ApplicationSubmissionContext appContext =
         createAppSubmissionContext(newApp);
+
     final SubmitApplicationRequest req =
         SubmitApplicationRequest.newInstance(appContext);
 
@@ -1490,7 +1503,22 @@ public class RMWebServices {
           newApp.getAppNodeLabelExpression(),
           newApp.getAMContainerNodeLabelExpression());
     appContext.setApplicationTags(newApp.getApplicationTags());
-
+    appContext.setAttemptFailuresValidityInterval(
+        newApp.getAttemptFailuresValidityInterval());
+    if (newApp.getLogAggregationContextInfo() != null) {
+      appContext.setLogAggregationContext(createLogAggregationContext(
+          newApp.getLogAggregationContextInfo()));
+    }
+    String reservationIdStr = newApp.getReservationId();
+    if (reservationIdStr != null && !reservationIdStr.isEmpty()) {
+      ReservationId reservationId = ReservationId.parseReservationId(
+          reservationIdStr);
+      appContext.setReservationID(reservationId);
+    }
+    if (newApp.getAMBlackListingRequestInfo() != null) {
+      appContext.setAMBlackListRequest(createAMBlackListingRequest(
+          newApp.getAMBlackListingRequestInfo()));
+    }
     return appContext;
   }
 
@@ -1626,6 +1654,24 @@ public class RMWebServices {
 
     callerUGI.setAuthenticationMethod(AuthenticationMethod.KERBEROS);
     return callerUGI;
+  }
+
+  private LogAggregationContext createLogAggregationContext(
+      LogAggregationContextInfo logAggregationContextInfo) {
+    return LogAggregationContext.newInstance(
+        logAggregationContextInfo.getIncludePattern(),
+        logAggregationContextInfo.getExcludePattern(),
+        logAggregationContextInfo.getRolledLogsIncludePattern(),
+        logAggregationContextInfo.getRolledLogsExcludePattern(),
+        logAggregationContextInfo.getLogAggregationPolicyClassName(),
+        logAggregationContextInfo.getLogAggregationPolicyParameters());
+  }
+
+  private AMBlackListingRequest createAMBlackListingRequest(
+      AMBlackListingRequestInfo amBlackListingRequestInfo) {
+    return AMBlackListingRequest.newInstance(
+        amBlackListingRequestInfo.getAMBlackListingEnabled(),
+        amBlackListingRequestInfo.getBlackListingDisableFailureThreshold());
   }
 
   @POST
@@ -2124,6 +2170,58 @@ public class RMWebServices {
             .parseReservationId(resContext.getReservationId()));
 
     return request;
+  }
+
+  /**
+   * Function to retrieve a list of all the reservations.
+   */
+  @GET
+  @Path("/reservation/list")
+  @Produces({ MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML })
+  public Response listReservation(
+          @QueryParam("queue") @DefaultValue("default") String queue,
+          @QueryParam("reservation-id") @DefaultValue("") String reservationId,
+          @QueryParam("start-time") @DefaultValue("0") long startTime,
+          @QueryParam("end-time") @DefaultValue("-1") long endTime,
+          @QueryParam("include-resource-allocations") @DefaultValue("false")
+          boolean includeResourceAllocations, @Context HttpServletRequest hsr)
+          throws Exception {
+    init();
+
+    final ReservationListRequest request = ReservationListRequest.newInstance(
+          queue, reservationId, startTime, endTime, includeResourceAllocations);
+
+    UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
+    if (callerUGI == null) {
+      throw new AuthorizationException("Unable to obtain user name, "
+              + "user not authenticated");
+    }
+    if (UserGroupInformation.isSecurityEnabled() && isStaticUser(callerUGI)) {
+      String msg = "The default static user cannot carry out this operation.";
+      return Response.status(Status.FORBIDDEN).entity(msg).build();
+    }
+
+    ReservationListResponse resRespInfo;
+    try {
+      resRespInfo = callerUGI.doAs(
+          new PrivilegedExceptionAction<ReservationListResponse>() {
+            @Override
+            public ReservationListResponse run() throws IOException,
+                    YarnException {
+              return rm.getClientRMService().listReservations(request);
+            }
+          });
+    } catch (UndeclaredThrowableException ue) {
+      if (ue.getCause() instanceof YarnException) {
+        throw new BadRequestException(ue.getCause().getMessage());
+      }
+      LOG.info("List reservation request failed", ue);
+      throw ue;
+    }
+
+    ReservationListInfo resResponse = new ReservationListInfo(resRespInfo,
+            includeResourceAllocations);
+    return Response.status(Status.OK).entity(resResponse).build();
   }
 
 }

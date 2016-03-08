@@ -19,6 +19,7 @@ package org.apache.hadoop.hdfs;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.apache.commons.logging.impl.Log4JLogger;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.BlockLocation;
 import org.apache.hadoop.fs.Path;
@@ -29,16 +30,22 @@ import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
 import org.apache.hadoop.hdfs.protocol.LocatedStripedBlock;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
+import org.apache.hadoop.hdfs.server.blockmanagement.BlockPlacementPolicy;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
 import org.apache.hadoop.hdfs.server.datanode.DataNodeTestUtils;
 import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
+import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.apache.hadoop.hdfs.server.namenode.NameNodeAdapter;
 import org.apache.hadoop.hdfs.util.StripedBlockUtil;
+import org.apache.hadoop.test.GenericTestUtils;
+import org.apache.log4j.Level;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
+import org.junit.Rule;
+import org.junit.rules.Timeout;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -51,24 +58,43 @@ import static org.apache.hadoop.hdfs.StripedFileTestUtil.numDNs;
 public class TestReadStripedFileWithDecoding {
   static final Log LOG = LogFactory.getLog(TestReadStripedFileWithDecoding.class);
 
+  static {
+    ((Log4JLogger)LogFactory.getLog(BlockPlacementPolicy.class))
+        .getLogger().setLevel(Level.ALL);
+    GenericTestUtils.setLogLevel(BlockManager.LOG, Level.ALL);
+    GenericTestUtils.setLogLevel(BlockManager.blockLog, Level.ALL);
+    GenericTestUtils.setLogLevel(NameNode.stateChangeLog, Level.ALL);
+  }
+
   private MiniDFSCluster cluster;
   private DistributedFileSystem fs;
-  private final short dataBlocks = StripedFileTestUtil.NUM_DATA_BLOCKS;
-  private final short parityBlocks = StripedFileTestUtil.NUM_PARITY_BLOCKS;
+  private static final short dataBlocks = StripedFileTestUtil.NUM_DATA_BLOCKS;
+  private static final short parityBlocks = StripedFileTestUtil.NUM_PARITY_BLOCKS;
   private final int cellSize = StripedFileTestUtil.BLOCK_STRIPED_CELL_SIZE;
   private final int smallFileLength = blockSize * dataBlocks - 123;
   private final int largeFileLength = blockSize * dataBlocks + 123;
   private final int[] fileLengths = {smallFileLength, largeFileLength};
-  private final int[] dnFailureNums = {1, 2, 3};
+  private static final int[] dnFailureNums = getDnFailureNums();
+
+  private static int[] getDnFailureNums() {
+    int[] dnFailureNums = new int[parityBlocks];
+    for (int i = 0; i < dnFailureNums.length; i++) {
+      dnFailureNums[i] = i + 1;
+    }
+    return dnFailureNums;
+  }
+
+  @Rule
+  public Timeout globalTimeout = new Timeout(300000);
 
   @Before
   public void setup() throws IOException {
     Configuration conf = new HdfsConfiguration();
     conf.setLong(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, blockSize);
     conf.setInt(DFSConfigKeys.DFS_NAMENODE_REPLICATION_MAX_STREAMS_KEY, 0);
+    conf.setInt(DFSConfigKeys.DFS_NAMENODE_REPLICATION_STREAMS_HARD_LIMIT_KEY, 0);
     conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_REPLICATION_CONSIDERLOAD_KEY, false);
-    cluster = new MiniDFSCluster.Builder(new HdfsConfiguration())
-        .numDataNodes(numDNs).build();
+    cluster = new MiniDFSCluster.Builder(conf).numDataNodes(numDNs).build();
     cluster.getFileSystem().getClient().setErasureCodingPolicy("/", null);
     fs = cluster.getFileSystem();
   }
@@ -114,8 +140,9 @@ public class TestReadStripedFileWithDecoding {
   @Test(timeout=300000)
   public void testReadCorruptedData() throws IOException {
     for (int fileLength : fileLengths) {
-      for (int dataDelNum = 1; dataDelNum < 4; dataDelNum++) {
-        for (int parityDelNum = 0; (dataDelNum+parityDelNum) < 4; parityDelNum++) {
+      for (int dataDelNum = 1; dataDelNum <= parityBlocks; dataDelNum++) {
+        for (int parityDelNum = 0; (dataDelNum + parityDelNum) <= parityBlocks;
+             parityDelNum++) {
           String src = "/corrupted_" + dataDelNum + "_" + parityDelNum;
           testReadWithBlockCorrupted(src, fileLength,
               dataDelNum, parityDelNum, false);
@@ -131,8 +158,9 @@ public class TestReadStripedFileWithDecoding {
   @Test(timeout=300000)
   public void testReadCorruptedDataByDeleting() throws IOException {
     for (int fileLength : fileLengths) {
-      for (int dataDelNum = 1; dataDelNum < 4; dataDelNum++) {
-        for (int parityDelNum = 0; (dataDelNum+parityDelNum) < 4; parityDelNum++) {
+      for (int dataDelNum = 1; dataDelNum <= parityBlocks; dataDelNum++) {
+        for (int parityDelNum = 0; (dataDelNum + parityDelNum) <= parityBlocks;
+             parityDelNum++) {
           String src = "/deleted_" + dataDelNum + "_" + parityDelNum;
           testReadWithBlockCorrupted(src, fileLength,
               dataDelNum, parityDelNum, true);

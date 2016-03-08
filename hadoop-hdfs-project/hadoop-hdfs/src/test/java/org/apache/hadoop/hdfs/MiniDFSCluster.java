@@ -1908,12 +1908,7 @@ public class MiniDFSCluster {
     shutdownDataNodes();
     for (NameNodeInfo nnInfo : namenodes.values()) {
       if (nnInfo == null) continue;
-      NameNode nameNode = nnInfo.nameNode;
-      if (nameNode != null) {
-        nameNode.stop();
-        nameNode.join();
-        nameNode = null;
-      }
+      stopAndJoinNameNode(nnInfo.nameNode);
     }
     ShutdownHookManager.get().clearShutdownHooks();
     if (base_dir != null) {
@@ -1953,17 +1948,25 @@ public class MiniDFSCluster {
    */
   public synchronized void shutdownNameNode(int nnIndex) {
     NameNodeInfo info = getNN(nnIndex);
-    NameNode nn = info.nameNode;
-    if (nn != null) {
-      LOG.info("Shutting down the namenode");
-      nn.stop();
-      nn.join();
-      info.nnId = null;
-      info.nameNode = null;
-      info.nameserviceId = null;
-    }
+    stopAndJoinNameNode(info.nameNode);
+    info.nnId = null;
+    info.nameNode = null;
+    info.nameserviceId = null;
   }
-  
+
+  /**
+   * Fully stop the NameNode by stop and join.
+   */
+  private void stopAndJoinNameNode(NameNode nn) {
+    if (nn == null) {
+      return;
+    }
+    LOG.info("Shutting down the namenode");
+    nn.stop();
+    nn.join();
+    nn.joinHttpServer();
+  }
+
   /**
    * Restart all namenodes.
    */
@@ -2182,6 +2185,28 @@ public class MiniDFSCluster {
       }
     }
     return stopDataNode(node);
+  }
+
+  /*
+   * Shutdown a particular datanode
+   * @param i node index
+   * @return null if the node index is out of range, else the properties of the
+   * removed node
+   */
+  public synchronized DataNodeProperties stopDataNodeForUpgrade(int i)
+      throws IOException {
+    if (i < 0 || i >= dataNodes.size()) {
+      return null;
+    }
+    DataNodeProperties dnprop = dataNodes.remove(i);
+    DataNode dn = dnprop.datanode;
+    LOG.info("MiniDFSCluster Stopping DataNode " +
+        dn.getDisplayName() +
+        " from a total of " + (dataNodes.size() + 1) +
+        " datanodes.");
+    dn.shutdownDatanode(true);
+    numDataNodes--;
+    return dnprop;
   }
 
   /**

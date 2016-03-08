@@ -28,6 +28,7 @@ import org.apache.hadoop.fs.ContentSummary;
 import org.apache.hadoop.fs.CreateFlag;
 import org.apache.hadoop.fs.FsServerDefaults;
 import org.apache.hadoop.fs.Options.Rename;
+import org.apache.hadoop.fs.QuotaUsage;
 import org.apache.hadoop.hdfs.protocol.BlockStoragePolicy;
 import org.apache.hadoop.hdfs.protocol.CacheDirectiveEntry;
 import org.apache.hadoop.hdfs.protocol.CacheDirectiveInfo;
@@ -120,6 +121,8 @@ import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.GetLis
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.GetListingResponseProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.GetPreferredBlockSizeRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.GetPreferredBlockSizeResponseProto;
+import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.GetQuotaUsageRequestProto;
+import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.GetQuotaUsageResponseProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.GetServerDefaultsRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.GetServerDefaultsResponseProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.GetSnapshotDiffReportRequestProto;
@@ -154,6 +157,8 @@ import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.Remove
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.RemoveCacheDirectiveResponseProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.RemoveCachePoolRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.RemoveCachePoolResponseProto;
+import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.UnsetStoragePolicyRequestProto;
+import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.UnsetStoragePolicyResponseProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.Rename2RequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.Rename2ResponseProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.RenameRequestProto;
@@ -259,6 +264,9 @@ public class ClientNamenodeProtocolServerSideTranslatorPB implements
       GetSnapshottableDirListingResponseProto.newBuilder().build();
   static final SetStoragePolicyResponseProto VOID_SET_STORAGE_POLICY_RESPONSE =
       SetStoragePolicyResponseProto.newBuilder().build();
+  static final UnsetStoragePolicyResponseProto
+      VOID_UNSET_STORAGE_POLICY_RESPONSE =
+      UnsetStoragePolicyResponseProto.newBuilder().build();
 
   private static final CreateResponseProto VOID_CREATE_RESPONSE = 
   CreateResponseProto.newBuilder().build();
@@ -1483,6 +1491,18 @@ public class ClientNamenodeProtocolServerSideTranslatorPB implements
   }
 
   @Override
+  public UnsetStoragePolicyResponseProto unsetStoragePolicy(
+      RpcController controller, UnsetStoragePolicyRequestProto request)
+      throws ServiceException {
+    try {
+      server.unsetStoragePolicy(request.getSrc());
+    } catch (IOException e) {
+      throw new ServiceException(e);
+    }
+    return VOID_UNSET_STORAGE_POLICY_RESPONSE;
+  }
+
+  @Override
   public GetStoragePolicyResponseProto getStoragePolicy(
       RpcController controller, GetStoragePolicyRequestProto request)
       throws ServiceException {
@@ -1563,6 +1583,19 @@ public class ClientNamenodeProtocolServerSideTranslatorPB implements
         builder.setEcPolicy(PBHelperClient.convertErasureCodingPolicy(ecPolicy));
       }
       return builder.build();
+    } catch (IOException e) {
+      throw new ServiceException(e);
+    }
+  }
+
+  @Override
+  public GetQuotaUsageResponseProto getQuotaUsage(
+      RpcController controller, GetQuotaUsageRequestProto req)
+      throws ServiceException {
+    try {
+      QuotaUsage result = server.getQuotaUsage(req.getPath());
+      return GetQuotaUsageResponseProto.newBuilder()
+          .setUsage(PBHelperClient.convert(result)).build();
     } catch (IOException e) {
       throw new ServiceException(e);
     }

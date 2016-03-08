@@ -137,7 +137,7 @@ import org.apache.hadoop.util.ToolRunner;
  */
 @InterfaceAudience.Public
 @InterfaceStability.Stable
-public class JobClient extends CLI {
+public class JobClient extends CLI implements AutoCloseable {
 
   @InterfaceAudience.Private
   public static final String MAPREDUCE_CLIENT_RETRY_POLICY_ENABLED_KEY =
@@ -499,6 +499,7 @@ public class JobClient extends CLI {
   /**
    * Close the <code>JobClient</code>.
    */
+  @Override
   public synchronized void close() throws IOException {
     cluster.close();
   }
@@ -576,10 +577,18 @@ public class JobClient extends CLI {
           return job;
         }
       });
+
+      Cluster prev = cluster;
       // update our Cluster instance with the one created by Job for submission
       // (we can't pass our Cluster instance to Job, since Job wraps the config
       // instance, and the two configs would then diverge)
       cluster = job.getCluster();
+
+      // It is important to close the previous cluster instance
+      // to cleanup resources.
+      if (prev != null) {
+        prev.close();
+      }
       return new NetworkedJob(job);
     } catch (InterruptedException ie) {
       throw new IOException("interrupted", ie);

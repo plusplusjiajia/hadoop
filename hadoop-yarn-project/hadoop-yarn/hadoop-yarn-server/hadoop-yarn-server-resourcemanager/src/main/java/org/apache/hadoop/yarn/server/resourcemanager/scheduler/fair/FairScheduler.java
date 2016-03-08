@@ -43,6 +43,7 @@ import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.ContainerResourceChangeRequest;
 import org.apache.hadoop.yarn.api.records.ContainerStatus;
 import org.apache.hadoop.yarn.api.records.NodeId;
+import org.apache.hadoop.yarn.api.records.NodeState;
 import org.apache.hadoop.yarn.api.records.QueueACL;
 import org.apache.hadoop.yarn.api.records.QueueInfo;
 import org.apache.hadoop.yarn.api.records.QueueUserACLInfo;
@@ -70,6 +71,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainer;
 import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainerEventType;
 import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainerState;
 import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNode;
+import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNodeResourceUpdateEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.rmnode.UpdatedContainerInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.AbstractYarnScheduler;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ActiveUsersManager;
@@ -85,7 +87,6 @@ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.AppAttemptA
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.AppAttemptRemovedSchedulerEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.AppRemovedSchedulerEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.ContainerExpiredSchedulerEvent;
-import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.ContainerRescheduledEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.NodeAddedSchedulerEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.NodeRemovedSchedulerEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.NodeResourceUpdateSchedulerEvent;
@@ -216,7 +217,7 @@ public class FairScheduler extends
 
   public FairScheduler() {
     super(FairScheduler.class.getName());
-    clock = new SystemClock();
+    clock = SystemClock.getInstance();
     allocsLoader = new AllocationFileLoaderService();
     queueMgr = new QueueManager(this);
     maxRunningEnforcer = new MaxRunningAppsEnforcer(this);
@@ -498,7 +499,7 @@ public class FairScheduler extends
 
         // TODO: Not sure if this ever actually adds this to the list of cleanup
         // containers on the RMNode (see SchedulerNode.releaseContainer()).
-        completedContainer(container, status, RMContainerEventType.KILL);
+        super.completedContainer(container, status, RMContainerEventType.KILL);
         LOG.info("Killing container" + container +
             " (after waiting for preemption for " +
             (getClock().getTime() - time) + "ms)");
@@ -657,7 +658,8 @@ public class FairScheduler extends
     if (!queue.hasAccess(QueueACL.SUBMIT_APPLICATIONS, userUgi)
         && !queue.hasAccess(QueueACL.ADMINISTER_QUEUE, userUgi)) {
       String msg = "User " + userUgi.getUserName() +
-              " cannot submit applications to queue " + queue.getName();
+              " cannot submit applications to queue " + queue.getName() +
+              "(requested queuename is " + queueName + ")";
       LOG.info(msg);
       rmContext.getDispatcher().getEventHandler()
           .handle(new RMAppEvent(applicationId,
@@ -807,7 +809,7 @@ public class FairScheduler extends
         LOG.info("Skip killing " + rmContainer.getContainerId());
         continue;
       }
-      completedContainer(rmContainer,
+      super.completedContainer(rmContainer,
           SchedulerUtils.createAbnormalContainerStatus(
               rmContainer.getContainerId(),
               SchedulerUtils.COMPLETED_APPLICATION),
@@ -816,7 +818,7 @@ public class FairScheduler extends
 
     // Release all reserved containers
     for (RMContainer rmContainer : attempt.getReservedContainers()) {
-      completedContainer(rmContainer,
+      super.completedContainer(rmContainer,
           SchedulerUtils.createAbnormalContainerStatus(
               rmContainer.getContainerId(),
               "Application Complete"),
@@ -843,13 +845,9 @@ public class FairScheduler extends
    * Clean up a completed container.
    */
   @Override
-  protected synchronized void completedContainer(RMContainer rmContainer,
-      ContainerStatus containerStatus, RMContainerEventType event) {
-    if (rmContainer == null) {
-      LOG.info("Container " + containerStatus.getContainerId()
-          + " completed with event " + event);
-      return;
-    }
+  protected synchronized void completedContainerInternal(
+      RMContainer rmContainer, ContainerStatus containerStatus,
+      RMContainerEventType event) {
 
     Container container = rmContainer.getContainer();
 
@@ -891,7 +889,7 @@ public class FairScheduler extends
     } else {
       nodesPerRack.put(rackName, 1);
     }
-    Resources.addTo(clusterResource, node.getTotalCapability());
+    Resources.addTo(clusterResource, schedulerNode.getTotalResource());
     updateMaximumAllocation(schedulerNode, true);
 
     triggerUpdate();
@@ -911,7 +909,7 @@ public class FairScheduler extends
     if (node == null) {
       return;
     }
-    Resources.subtractFrom(clusterResource, rmNode.getTotalCapability());
+    Resources.subtractFrom(clusterResource, node.getTotalResource());
     updateRootQueueMetrics();
 
     triggerUpdate();
@@ -919,7 +917,7 @@ public class FairScheduler extends
     // Remove running containers
     List<RMContainer> runningContainers = node.getRunningContainers();
     for (RMContainer container : runningContainers) {
-      completedContainer(container,
+      super.completedContainer(container,
           SchedulerUtils.createAbnormalContainerStatus(
               container.getContainerId(),
               SchedulerUtils.LOST_CONTAINER),
@@ -929,7 +927,7 @@ public class FairScheduler extends
     // Remove reservations, if any
     RMContainer reservedContainer = node.getReservedContainer();
     if (reservedContainer != null) {
-      completedContainer(reservedContainer,
+      super.completedContainer(reservedContainer,
           SchedulerUtils.createAbnormalContainerStatus(
               reservedContainer.getContainerId(),
               SchedulerUtils.LOST_CONTAINER),
@@ -1057,8 +1055,21 @@ public class FairScheduler extends
     for (ContainerStatus completedContainer : completedContainers) {
       ContainerId containerId = completedContainer.getContainerId();
       LOG.debug("Container FINISHED: " + containerId);
-      completedContainer(getRMContainer(containerId),
+      super.completedContainer(getRMContainer(containerId),
           completedContainer, RMContainerEventType.FINISHED);
+    }
+
+    // If the node is decommissioning, send an update to have the total
+    // resource equal to the used resource, so no available resource to
+    // schedule.
+    if (nm.getState() == NodeState.DECOMMISSIONING) {
+      this.rmContext
+          .getDispatcher()
+          .getEventHandler()
+          .handle(
+              new RMNodeResourceUpdateEvent(nm.getNodeID(), ResourceOption
+                  .newInstance(getSchedulerNode(nm.getNodeID())
+                      .getAllocatedResource(), 0)));
     }
 
     if (continuousSchedulingEnabled) {
@@ -1094,7 +1105,7 @@ public class FairScheduler extends
       FSSchedulerNode node = getFSSchedulerNode(nodeId);
       try {
         if (node != null && Resources.fitsIn(minimumAllocation,
-            node.getAvailableResource())) {
+            node.getUnallocatedResource())) {
           attemptScheduling(node);
         }
       } catch (Throwable ex) {
@@ -1126,8 +1137,8 @@ public class FairScheduler extends
         return -1;
       }
       return RESOURCE_CALCULATOR.compare(clusterResource,
-              nodes.get(n2).getAvailableResource(),
-              nodes.get(n1).getAvailableResource());
+              nodes.get(n2).getUnallocatedResource(),
+              nodes.get(n1).getUnallocatedResource());
     }
   }
 
@@ -1302,20 +1313,11 @@ public class FairScheduler extends
       ContainerExpiredSchedulerEvent containerExpiredEvent =
           (ContainerExpiredSchedulerEvent)event;
       ContainerId containerId = containerExpiredEvent.getContainerId();
-      completedContainer(getRMContainer(containerId),
+      super.completedContainer(getRMContainer(containerId),
           SchedulerUtils.createAbnormalContainerStatus(
               containerId,
               SchedulerUtils.EXPIRED_CONTAINER),
           RMContainerEventType.EXPIRE);
-      break;
-    case CONTAINER_RESCHEDULED:
-      if (!(event instanceof ContainerRescheduledEvent)) {
-        throw new RuntimeException("Unexpected event type: " + event);
-      }
-      ContainerRescheduledEvent containerRescheduledEvent =
-          (ContainerRescheduledEvent) event;
-      RMContainer container = containerRescheduledEvent.getContainer();
-      recoverResourceRequestForContainer(container);
       break;
     default:
       LOG.error("Unknown event arrived at FairScheduler: " + event.toString());

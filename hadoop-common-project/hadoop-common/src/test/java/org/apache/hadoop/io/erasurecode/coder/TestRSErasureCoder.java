@@ -19,14 +19,18 @@ package org.apache.hadoop.io.erasurecode.coder;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
-import org.apache.hadoop.io.erasurecode.rawcoder.RSRawErasureCoderFactory;
+import org.apache.hadoop.io.erasurecode.rawcoder.RSRawErasureCoderFactoryLegacy;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.Timeout;
 
 /**
  * Test Reed-Solomon encoding and decoding.
  */
 public class TestRSErasureCoder extends TestErasureCoderBase {
+  @Rule
+  public Timeout globalTimeout = new Timeout(300000);
 
   @Before
   public void setup() {
@@ -54,7 +58,7 @@ public class TestRSErasureCoder extends TestErasureCoderBase {
      */
     Configuration conf = new Configuration();
     conf.set(CommonConfigurationKeys.IO_ERASURECODE_CODEC_RS_RAWCODER_KEY,
-        RSRawErasureCoderFactory.class.getCanonicalName());
+        RSRawErasureCoderFactoryLegacy.class.getCanonicalName());
     prepare(conf, 10, 4, new int[]{0}, new int[0]);
 
     testCoding(true);

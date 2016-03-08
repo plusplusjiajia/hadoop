@@ -52,7 +52,7 @@ import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.AMRM
 import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.ApplicationAttemptStateDataProto;
 import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.ApplicationStateDataProto;
 import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.EpochProto;
-import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.ReservationAllocationStateProto;
+import org.apache.hadoop.yarn.proto.YarnProtos.ReservationAllocationStateProto;
 import org.apache.hadoop.yarn.security.client.RMDelegationTokenIdentifier;
 import org.apache.hadoop.yarn.server.records.Version;
 import org.apache.hadoop.yarn.server.records.impl.pb.VersionPBImpl;
@@ -479,6 +479,18 @@ public class FileSystemRMStateStore extends RMStateStore {
       LOG.info("Error updating info for attempt: " + appAttemptId, e);
       throw e;
     }
+  }
+
+  @Override
+  public synchronized void removeApplicationAttemptInternal(
+      ApplicationAttemptId appAttemptId)
+      throws Exception {
+    Path appDirPath =
+        getAppDir(rmAppRoot, appAttemptId.getApplicationId());
+    Path nodeRemovePath = getNodePath(appDirPath, appAttemptId.toString());
+    LOG.info("Removing info for attempt: " + appAttemptId + " at: "
+        + nodeRemovePath);
+    deleteFileWithRetries(nodeRemovePath);
   }
 
   @Override

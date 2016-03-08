@@ -31,6 +31,7 @@ import static org.mockito.Mockito.when;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.OutputStreamWriter;
 import java.io.PrintStream;
 import java.io.PrintWriter;
 import java.io.UnsupportedEncodingException;
@@ -307,7 +308,9 @@ public class TestYarnCLI {
     assertEquals(0, result);
     verify(client).getContainers(attemptId);
     ByteArrayOutputStream baos = new ByteArrayOutputStream();
-    PrintWriter pw = new PrintWriter(baos);
+    OutputStreamWriter stream =
+        new OutputStreamWriter(baos, "UTF-8");
+    PrintWriter pw = new PrintWriter(stream);
     pw.println("Total number of containers :3");
     pw.print("                  Container-Id");
     pw.print("\t          Start Time");
@@ -342,9 +345,9 @@ public class TestYarnCLI {
     Log.info("ExpectedOutput");
     Log.info("["+appReportStr+"]");
     Log.info("OutputFrom command");
-    String actualOutput = sysOutStream.toString();
+    String actualOutput = sysOutStream.toString("UTF-8");
     Log.info("["+actualOutput+"]");
-    Assert.assertEquals(appReportStr, sysOutStream.toString());
+    Assert.assertEquals(appReportStr, actualOutput);
   }
   
   @Test
@@ -745,14 +748,6 @@ public class TestYarnCLI {
         sysOutStream.toString());
 
     sysOutStream.reset();
-    ApplicationId applicationId = ApplicationId.newInstance(1234, 5);
-    result = cli.run(
-        new String[] {"application", "-kill", applicationId.toString(), "args" });
-    verify(spyCli).printUsage(any(String.class), any(Options.class));
-    Assert.assertEquals(createApplicationCLIHelpMessage(),
-        sysOutStream.toString());
-
-    sysOutStream.reset();
     NodeId nodeId = NodeId.newInstance("host0", 0);
     result = cli.run(
         new String[] { "application", "-status", nodeId.toString(), "args" });
@@ -878,7 +873,134 @@ public class TestYarnCLI {
       Assert.fail("Unexpected exception: " + e);
     }
   }
-  
+
+  @Test
+  public void testKillApplications() throws Exception {
+    ApplicationCLI cli = createAndGetAppCLI();
+    ApplicationId applicationId1 = ApplicationId.newInstance(1234, 5);
+    ApplicationId applicationId2 = ApplicationId.newInstance(1234, 6);
+    ApplicationId applicationId3 = ApplicationId.newInstance(1234, 7);
+    ApplicationId applicationId4 = ApplicationId.newInstance(1234, 8);
+
+    // Test Scenario 1: Both applications are FINISHED.
+    ApplicationReport newApplicationReport1 = ApplicationReport.newInstance(
+        applicationId1, ApplicationAttemptId.newInstance(applicationId1, 1),
+        "user", "queue", "appname", "host", 124, null,
+        YarnApplicationState.FINISHED, "diagnostics", "url", 0, 0,
+        FinalApplicationStatus.SUCCEEDED, null, "N/A", 0.53789f, "YARN", null);
+    ApplicationReport newApplicationReport2 = ApplicationReport.newInstance(
+        applicationId2, ApplicationAttemptId.newInstance(applicationId2, 1),
+        "user", "queue", "appname", "host", 124, null,
+        YarnApplicationState.FINISHED, "diagnostics", "url", 0, 0,
+        FinalApplicationStatus.SUCCEEDED, null, "N/A", 0.34344f, "YARN", null);
+    when(client.getApplicationReport(applicationId1)).thenReturn(
+        newApplicationReport1);
+    when(client.getApplicationReport(applicationId2)).thenReturn(
+        newApplicationReport2);
+    int result = cli.run(new String[]{"application", "-kill",
+        applicationId1.toString() + " " + applicationId2.toString()});
+    assertEquals(0, result);
+    verify(client, times(0)).killApplication(applicationId1);
+    verify(client, times(0)).killApplication(applicationId2);
+    verify(sysOut).println(
+        "Application " + applicationId1 + " has already finished ");
+    verify(sysOut).println(
+        "Application " + applicationId2 + " has already finished ");
+
+    // Test Scenario 2: Both applications are RUNNING.
+    ApplicationReport newApplicationReport3 = ApplicationReport.newInstance(
+        applicationId1, ApplicationAttemptId.newInstance(applicationId1, 1),
+        "user", "queue", "appname", "host", 124, null,
+        YarnApplicationState.RUNNING, "diagnostics", "url", 0, 0,
+        FinalApplicationStatus.SUCCEEDED, null, "N/A", 0.53789f, "YARN", null);
+    ApplicationReport newApplicationReport4 = ApplicationReport.newInstance(
+        applicationId2, ApplicationAttemptId.newInstance(applicationId2, 1),
+        "user", "queue", "appname", "host", 124, null,
+        YarnApplicationState.RUNNING, "diagnostics", "url", 0, 0,
+        FinalApplicationStatus.SUCCEEDED, null, "N/A", 0.53345f, "YARN", null);
+    when(client.getApplicationReport(applicationId1)).thenReturn(
+        newApplicationReport3);
+    when(client.getApplicationReport(applicationId2)).thenReturn(
+        newApplicationReport4);
+    result = cli.run(new String[]{"application", "-kill",
+        applicationId1.toString() + " " + applicationId2.toString()});
+    assertEquals(0, result);
+    verify(client).killApplication(applicationId1);
+    verify(client).killApplication(applicationId2);
+    verify(sysOut).println(
+        "Killing application application_1234_0005");
+    verify(sysOut).println(
+        "Killing application application_1234_0006");
+
+    // Test Scenario 3: Both applications are not present.
+    doThrow(new ApplicationNotFoundException("Application with id '"
+        + applicationId3 + "' doesn't exist in RM.")).when(client)
+        .getApplicationReport(applicationId3);
+    doThrow(new ApplicationNotFoundException("Application with id '"
+        + applicationId4 + "' doesn't exist in RM.")).when(client)
+        .getApplicationReport(applicationId4);
+    result = cli.run(new String[]{"application", "-kill",
+        applicationId3.toString() + " " + applicationId4.toString()});
+    Assert.assertNotEquals(0, result);
+    verify(sysOut).println(
+        "Application with id 'application_1234_0007' doesn't exist in RM.");
+    verify(sysOut).println(
+        "Application with id 'application_1234_0008' doesn't exist in RM.");
+
+    // Test Scenario 4: one application is not present and other RUNNING
+    doThrow(new ApplicationNotFoundException("Application with id '"
+        + applicationId3 + "' doesn't exist in RM.")).when(client)
+        .getApplicationReport(applicationId3);
+    ApplicationReport newApplicationReport5 = ApplicationReport.newInstance(
+        applicationId1, ApplicationAttemptId.newInstance(applicationId1, 1),
+        "user", "queue", "appname", "host", 124, null,
+        YarnApplicationState.RUNNING, "diagnostics", "url", 0, 0,
+        FinalApplicationStatus.SUCCEEDED, null, "N/A", 0.53345f, "YARN", null);
+    when(client.getApplicationReport(applicationId1)).thenReturn(
+        newApplicationReport5);
+    result = cli.run(new String[]{"application", "-kill",
+        applicationId3.toString() + " " + applicationId1.toString()});
+    Assert.assertEquals(0, result);
+
+    // Test Scenario 5: kill operation with some other command.
+    sysOutStream.reset();
+    result = cli.run(new String[]{"application", "--appStates", "RUNNING",
+        "-kill", applicationId3.toString() + " " + applicationId1.toString()});
+    Assert.assertEquals(-1, result);
+    Assert.assertEquals(createApplicationCLIHelpMessage(),
+        sysOutStream.toString());
+  }
+
+  @Test
+  public void testKillApplicationsOfDifferentEndStates() throws Exception {
+    ApplicationCLI cli = createAndGetAppCLI();
+    ApplicationId applicationId1 = ApplicationId.newInstance(1234, 5);
+    ApplicationId applicationId2 = ApplicationId.newInstance(1234, 6);
+
+    // Scenario: One application is FINISHED and other is RUNNING.
+    ApplicationReport newApplicationReport5 = ApplicationReport.newInstance(
+        applicationId1, ApplicationAttemptId.newInstance(applicationId1, 1),
+        "user", "queue", "appname", "host", 124, null,
+        YarnApplicationState.FINISHED, "diagnostics", "url", 0, 0,
+        FinalApplicationStatus.SUCCEEDED, null, "N/A", 0.53789f, "YARN", null);
+    ApplicationReport newApplicationReport6 = ApplicationReport.newInstance(
+        applicationId2, ApplicationAttemptId.newInstance(applicationId2, 1),
+        "user", "queue", "appname", "host", 124, null,
+        YarnApplicationState.RUNNING, "diagnostics", "url", 0, 0,
+        FinalApplicationStatus.SUCCEEDED, null, "N/A", 0.53345f, "YARN", null);
+    when(client.getApplicationReport(applicationId1)).thenReturn(
+        newApplicationReport5);
+    when(client.getApplicationReport(applicationId2)).thenReturn(
+        newApplicationReport6);
+    int result = cli.run(new String[]{"application", "-kill",
+        applicationId1.toString() + " " + applicationId2.toString()});
+    assertEquals(0, result);
+    verify(client, times(1)).killApplication(applicationId2);
+    verify(sysOut).println(
+        "Application " + applicationId1 + " has already finished ");
+    verify(sysOut).println("Killing application application_1234_0006");
+  }
+
   @Test
   public void testMoveApplicationAcrossQueues() throws Exception {
     ApplicationCLI cli = createAndGetAppCLI();
@@ -993,6 +1115,35 @@ public class TestYarnCLI {
     verify(sysOut, times(3)).write(any(byte[].class), anyInt(), anyInt());
 
     sysOutStream.reset();
+    result = cli.run(new String[] { "-list", "-showDetails" });
+    assertEquals(0, result);
+    baos = new ByteArrayOutputStream();
+    pw = new PrintWriter(baos);
+    pw.println("Total Nodes:2");
+    pw.print("         Node-Id\t     Node-State\tNode-Http-Address\t");
+    pw.println("Number-of-Running-Containers");
+    pw.print("         host0:0\t        RUNNING\t       host1:8888\t");
+    pw.println("                           0");
+    pw.println("Detailed Node Information :");
+    pw.println("\tConfigured Resources : <memory:0, vCores:0>");
+    pw.println("\tAllocated Resources : <memory:0, vCores:0>");
+    pw.println("\tResource Utilization by Node : PMem:2048 MB, VMem:4096 MB, VCores:8.0");
+    pw.println("\tResource Utilization by Containers : PMem:1024 MB, VMem:2048 MB, VCores:4.0");
+    pw.println("\tNode-Labels : ");
+    pw.print("         host1:0\t        RUNNING\t       host1:8888\t");
+    pw.println("                           0");
+    pw.println("Detailed Node Information :");
+    pw.println("\tConfigured Resources : <memory:0, vCores:0>");
+    pw.println("\tAllocated Resources : <memory:0, vCores:0>");
+    pw.println("\tResource Utilization by Node : PMem:2048 MB, VMem:4096 MB, VCores:8.0");
+    pw.println("\tResource Utilization by Containers : PMem:1024 MB, VMem:2048 MB, VCores:4.0");
+    pw.println("\tNode-Labels : ");
+    pw.close();
+    nodesReportStr = baos.toString("UTF-8");
+    Assert.assertEquals(nodesReportStr, sysOutStream.toString());
+    verify(sysOut, times(4)).write(any(byte[].class), anyInt(), anyInt());
+
+    sysOutStream.reset();
     nodeStates.clear();
     nodeStates.add(NodeState.UNHEALTHY);
     states = nodeStates.toArray(new NodeState[0]);
@@ -1011,7 +1162,7 @@ public class TestYarnCLI {
     pw.close();
     nodesReportStr = baos.toString("UTF-8");
     Assert.assertEquals(nodesReportStr, sysOutStream.toString());
-    verify(sysOut, times(4)).write(any(byte[].class), anyInt(), anyInt());
+    verify(sysOut, times(5)).write(any(byte[].class), anyInt(), anyInt());
 
     sysOutStream.reset();
     nodeStates.clear();
@@ -1032,7 +1183,7 @@ public class TestYarnCLI {
     pw.close();
     nodesReportStr = baos.toString("UTF-8");
     Assert.assertEquals(nodesReportStr, sysOutStream.toString());
-    verify(sysOut, times(5)).write(any(byte[].class), anyInt(), anyInt());
+    verify(sysOut, times(6)).write(any(byte[].class), anyInt(), anyInt());
 
     sysOutStream.reset();
     nodeStates.clear();
@@ -1053,7 +1204,7 @@ public class TestYarnCLI {
     pw.close();
     nodesReportStr = baos.toString("UTF-8");
     Assert.assertEquals(nodesReportStr, sysOutStream.toString());
-    verify(sysOut, times(6)).write(any(byte[].class), anyInt(), anyInt());
+    verify(sysOut, times(7)).write(any(byte[].class), anyInt(), anyInt());
 
     sysOutStream.reset();
     nodeStates.clear();
@@ -1074,7 +1225,7 @@ public class TestYarnCLI {
     pw.close();
     nodesReportStr = baos.toString("UTF-8");
     Assert.assertEquals(nodesReportStr, sysOutStream.toString());
-    verify(sysOut, times(7)).write(any(byte[].class), anyInt(), anyInt());
+    verify(sysOut, times(8)).write(any(byte[].class), anyInt(), anyInt());
 
     sysOutStream.reset();
     nodeStates.clear();
@@ -1107,7 +1258,7 @@ public class TestYarnCLI {
     pw.close();
     nodesReportStr = baos.toString("UTF-8");
     Assert.assertEquals(nodesReportStr, sysOutStream.toString());
-    verify(sysOut, times(8)).write(any(byte[].class), anyInt(), anyInt());
+    verify(sysOut, times(9)).write(any(byte[].class), anyInt(), anyInt());
 
     sysOutStream.reset();
     nodeStates.clear();
@@ -1142,7 +1293,7 @@ public class TestYarnCLI {
     pw.close();
     nodesReportStr = baos.toString("UTF-8");
     Assert.assertEquals(nodesReportStr, sysOutStream.toString());
-    verify(sysOut, times(9)).write(any(byte[].class), anyInt(), anyInt());
+    verify(sysOut, times(10)).write(any(byte[].class), anyInt(), anyInt());
   }
 
   private List<NodeReport> getNodeReports(
@@ -1665,7 +1816,9 @@ public class TestYarnCLI {
     pw.println("                                 based on input comma-separated list of");
     pw.println("                                 application types.");
     pw.println(" -help                           Displays help for all commands.");
-    pw.println(" -kill <Application ID>          Kills the application.");
+    pw.println(" -kill <Application ID>          Kills the application. Set of");
+    pw.println("                                 applications can be provided separated");
+    pw.println("                                 with space");
     pw.println(" -list                           List applications. Supports optional use");
     pw.println("                                 of -appTypes to filter applications based");
     pw.println("                                 on application type, and -appStates to");
@@ -1692,7 +1845,7 @@ public class TestYarnCLI {
     pw.println(" -fail <Application Attempt ID>     Fails application attempt.");
     pw.println(" -help                              Displays help for all commands.");
     pw.println(" -list <Application ID>             List application attempts for");
-    pw.println("                                    aplication.");
+    pw.println("                                    application.");
     pw.println(" -status <Application Attempt ID>   Prints the status of the application");
     pw.println("                                    attempt.");
     pw.close();
@@ -1727,7 +1880,9 @@ public class TestYarnCLI {
     pw.println(" -help              Displays help for all commands.");
     pw.println(" -list              List all running nodes. Supports optional use of");
     pw.println("                    -states to filter nodes based on node state, all -all");
-    pw.println("                    to list all nodes.");
+    pw.println("                    to list all nodes, -showDetails to display more");
+    pw.println("                    details about each node.");
+    pw.println(" -showDetails       Works with -list to show more details about each node.");
     pw.println(" -states <States>   Works with -list to filter nodes based on input");
     pw.println("                    comma-separated list of node states.");
     pw.println(" -status <NodeId>   Prints the status report of the node.");

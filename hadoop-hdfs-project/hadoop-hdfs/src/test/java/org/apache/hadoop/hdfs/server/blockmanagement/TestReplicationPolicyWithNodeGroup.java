@@ -34,6 +34,9 @@ import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.hdfs.DFSTestUtil;
 import org.apache.hadoop.hdfs.TestBlockStoragePolicy;
+import org.apache.hadoop.hdfs.protocol.Block;
+import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
+import org.apache.hadoop.hdfs.protocol.LocatedBlock;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants;
 import org.apache.hadoop.net.NetworkTopology;
 import org.apache.hadoop.net.NetworkTopologyWithNodeGroup;
@@ -101,7 +104,7 @@ public class TestReplicationPolicyWithNodeGroup extends BaseReplicationPolicyTes
   };
 
   private final static DatanodeDescriptor NODE = 
-      new DatanodeDescriptor(DFSTestUtil.getDatanodeDescriptor("9.9.9.9", "/d2/r4/n7"));
+      DFSTestUtil.getDatanodeDescriptor("9.9.9.9", "/d2/r4/n7");
   
   private static final DatanodeStorageInfo[] storagesForDependencies;
   private static final DatanodeDescriptor[]  dataNodesForDependencies;
@@ -128,6 +131,103 @@ public class TestReplicationPolicyWithNodeGroup extends BaseReplicationPolicyTes
     dataNodesForDependencies = DFSTestUtil.toDatanodeDescriptor(storagesForDependencies);
     
   };
+
+  /**
+   * Test block placement verification.
+   * @throws Exception
+   */
+  @Test
+  public void testVerifyBlockPlacement() throws Exception {
+    LocatedBlock locatedBlock;
+    BlockPlacementStatus status;
+    ExtendedBlock b = new ExtendedBlock("fake-pool", new Block(12345L));
+    List<DatanodeStorageInfo> set = new ArrayList<>();
+
+    // 2 node groups (not enough), 2 racks (enough)
+    set.clear();
+    set.add(storages[0]);
+    set.add(storages[1]);
+    set.add(storages[4]);
+    locatedBlock = BlockManager.newLocatedBlock(b,
+        set.toArray(new DatanodeStorageInfo[set.size()]), 0, false);
+    status = replicator.verifyBlockPlacement(locatedBlock.getLocations(),
+        set.size());
+    assertFalse(status.isPlacementPolicySatisfied());
+
+    // 3 node groups (enough), 2 racks (enough)
+    set.clear();
+    set.add(storages[0]);
+    set.add(storages[2]);
+    set.add(storages[5]);
+    locatedBlock = BlockManager.newLocatedBlock(b,
+        set.toArray(new DatanodeStorageInfo[set.size()]), 0, false);
+    status = replicator.verifyBlockPlacement(locatedBlock.getLocations(),
+        set.size());
+    assertTrue(status.isPlacementPolicySatisfied());
+
+    // 2 node groups (not enough), 1 rack (not enough)
+    set.clear();
+    set.add(storages[0]);
+    set.add(storages[1]);
+    set.add(storages[2]);
+    locatedBlock = BlockManager.newLocatedBlock(b,
+        set.toArray(new DatanodeStorageInfo[set.size()]), 0, false);
+    status = replicator.verifyBlockPlacement(locatedBlock.getLocations(),
+        set.size());
+    assertFalse(status.isPlacementPolicySatisfied());
+    assertTrue(status.getErrorDescription().contains("node group"));
+    assertTrue(status.getErrorDescription().contains("more rack(s)"));
+
+    // 3 node groups (enough), 3 racks (enough)
+    set.clear();
+    set.add(storages[0]);
+    set.add(storages[5]);
+    set.add(storages[7]);
+    locatedBlock = BlockManager.newLocatedBlock(b,
+        set.toArray(new DatanodeStorageInfo[set.size()]), 0, false);
+    status = replicator.verifyBlockPlacement(locatedBlock.getLocations(),
+        set.size());
+    assertTrue(status.isPlacementPolicySatisfied());
+
+    // 3 node groups (not enough), 3 racks (enough), 4 replicas
+    set.clear();
+    set.add(storages[0]);
+    set.add(storages[1]);
+    set.add(storages[5]);
+    set.add(storages[7]);
+    locatedBlock = BlockManager.newLocatedBlock(b,
+        set.toArray(new DatanodeStorageInfo[set.size()]), 0, false);
+    status = replicator.verifyBlockPlacement(locatedBlock.getLocations(),
+        set.size());
+    assertFalse(status.isPlacementPolicySatisfied());
+    assertTrue(status.getErrorDescription().contains("node group"));
+    assertFalse(status.getErrorDescription().contains("more rack(s)"));
+
+    // 2 node groups (not enough), 1 rack (not enough)
+    set.clear();
+    set.add(storages[0]);
+    set.add(storages[1]);
+    set.add(storages[2]);
+    locatedBlock = BlockManager.newLocatedBlock(b,
+        set.toArray(new DatanodeStorageInfo[set.size()]), 0, false);
+    status = replicator.verifyBlockPlacement(locatedBlock.getLocations(),
+        set.size());
+    assertFalse(status.isPlacementPolicySatisfied());
+    assertTrue(status.getErrorDescription().contains("node group"));
+    assertTrue(status.getErrorDescription().contains("more rack(s)"));
+
+    // 1 node group (not enough), 1 rack (not enough)
+    set.clear();
+    set.add(storages[0]);
+    set.add(storages[1]);
+    locatedBlock = BlockManager.newLocatedBlock(b,
+        set.toArray(new DatanodeStorageInfo[set.size()]), 0, false);
+    status = replicator.verifyBlockPlacement(locatedBlock.getLocations(),
+        set.size());
+    assertFalse(status.isPlacementPolicySatisfied());
+    assertTrue(status.getErrorDescription().contains("node group"));
+    assertTrue(status.getErrorDescription().contains("more rack(s)"));
+  }
 
   /**
    * Scan the targets list: all targets should be on different NodeGroups.
@@ -537,7 +637,7 @@ public class TestReplicationPolicyWithNodeGroup extends BaseReplicationPolicyTes
 
     List<DatanodeStorageInfo> first = new ArrayList<>();
     List<DatanodeStorageInfo> second = new ArrayList<>();
-    replicator.splitNodesWithRack(
+    replicator.splitNodesWithRack(replicaList,
         replicaList, rackMap, first, second);
     assertEquals(3, first.size());
     assertEquals(1, second.size());
@@ -780,5 +880,37 @@ public class TestReplicationPolicyWithNodeGroup extends BaseReplicationPolicyTes
       expectedTargets.contains(targets[0].getDatanodeDescriptor()));
     assertTrue("2nd Replica is incorrect",
       expectedTargets.contains(targets[1].getDatanodeDescriptor()));
+  }
+
+  /**
+   * In this testcase, passed 3 favored nodes
+   * dataNodes[0],dataNodes[1],dataNodes[2]
+   *
+   * Favored nodes on different nodegroup should be selected. Remaining replica
+   * should go through BlockPlacementPolicy.
+   *
+   * @throws Exception
+   */
+  @Test
+  public void testChooseRemainingReplicasApartFromFavoredNodes()
+      throws Exception {
+    DatanodeStorageInfo[] targets;
+    List<DatanodeDescriptor> expectedTargets =
+        new ArrayList<DatanodeDescriptor>();
+    expectedTargets.add(dataNodes[0]);
+    expectedTargets.add(dataNodes[2]);
+    expectedTargets.add(dataNodes[3]);
+    expectedTargets.add(dataNodes[6]);
+    expectedTargets.add(dataNodes[7]);
+    List<DatanodeDescriptor> favouredNodes =
+        new ArrayList<DatanodeDescriptor>();
+    favouredNodes.add(dataNodes[0]);
+    favouredNodes.add(dataNodes[1]);
+    favouredNodes.add(dataNodes[2]);
+    targets = chooseTarget(3, dataNodes[3], null, favouredNodes);
+    for (int i = 0; i < targets.length; i++) {
+      assertTrue("Target should be a part of Expected Targets",
+          expectedTargets.contains(targets[i].getDatanodeDescriptor()));
+    }
   }
 }

@@ -47,14 +47,14 @@ message GetErasureCodingPolicyResponseProto {
 }
 
 /**
- * Block erasure coding recovery info
+ * Block erasure coding reconstruction info
  */
-message BlockECRecoveryInfoProto {
+message BlockECReconstructionInfoProto {
   required ExtendedBlockProto block = 1;
   required DatanodeInfosProto sourceDnInfos = 2;
   required DatanodeInfosProto targetDnInfos = 3;
   required StorageUuidsProto targetStorageUuids = 4;
   required StorageTypesProto targetStorageTypes = 5;
-  repeated uint32 liveBlockIndices = 6;
+  required bytes liveBlockIndices = 6;
   required ErasureCodingPolicyProto ecPolicy = 7;
 }

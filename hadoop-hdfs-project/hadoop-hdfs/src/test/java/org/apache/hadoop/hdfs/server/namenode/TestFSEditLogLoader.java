@@ -21,7 +21,6 @@ package org.apache.hadoop.hdfs.server.namenode;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
-import static org.junit.Assert.assertFalse;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.spy;
 
@@ -32,6 +31,8 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.channels.FileChannel;
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.SortedMap;
@@ -42,47 +43,69 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DFSTestUtil;
+import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.StripedFileTestUtil;
+import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
-import org.apache.hadoop.hdfs.server.common.HdfsServerConstants;
-import org.apache.hadoop.hdfs.DistributedFileSystem;
-import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoContiguous;
+import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoStriped;
+import org.apache.hadoop.hdfs.server.common.HdfsServerConstants;
 import org.apache.hadoop.hdfs.server.common.Storage.StorageDirectory;
 import org.apache.hadoop.hdfs.server.namenode.FSEditLogLoader.EditLogValidation;
 import org.apache.hadoop.hdfs.server.namenode.NNStorage.NameNodeDirType;
-import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoStriped;
-import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.test.PathUtils;
 import org.apache.log4j.Level;
 import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.Parameterized;
+import org.junit.runners.Parameterized.Parameters;
 
 import com.google.common.collect.Maps;
 import com.google.common.io.Files;
 
+@RunWith(Parameterized.class)
 public class TestFSEditLogLoader {
-  
+  @Parameters
+  public static Collection<Object[]> data() {
+    Collection<Object[]> params = new ArrayList<Object[]>();
+    params.add(new Object[]{ Boolean.FALSE });
+    params.add(new Object[]{ Boolean.TRUE });
+    return params;
+  }
+
+  private static boolean useAsyncEditLog;
+  public TestFSEditLogLoader(Boolean async) {
+    useAsyncEditLog = async;
+  }
+
+  private static Configuration getConf() {
+    Configuration conf = new HdfsConfiguration();
+    conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_EDITS_ASYNC_LOGGING,
+        useAsyncEditLog);
+    return conf;
+  }
+
   static {
     GenericTestUtils.setLogLevel(FSImage.LOG, Level.ALL);
     GenericTestUtils.setLogLevel(FSEditLogLoader.LOG, Level.ALL);
   }
-  
+
   private static final File TEST_DIR = PathUtils.getTestDir(TestFSEditLogLoader.class);
 
   private static final int NUM_DATA_NODES = 0;
 
   private static final ErasureCodingPolicy testECPolicy
-      = ErasureCodingPolicyManager.getSystemDefaultPolicy();
-  
+      = StripedFileTestUtil.TEST_EC_POLICY;
+
   @Test
   public void testDisplayRecentEditLogOpCodes() throws IOException {
-    // start a cluster 
-    Configuration conf = new HdfsConfiguration();
+    // start a cluster
+    Configuration conf = getConf();
     MiniDFSCluster cluster = null;
     FileSystem fileSys = null;
     cluster = new MiniDFSCluster.Builder(conf).numDataNodes(NUM_DATA_NODES)
@@ -132,7 +155,7 @@ public class TestFSEditLogLoader {
   @Test
   public void testReplicationAdjusted() throws Exception {
     // start a cluster 
-    Configuration conf = new HdfsConfiguration();
+    Configuration conf = getConf();
     // Replicate and heartbeat fast to shave a few seconds off test
     conf.setInt(DFSConfigKeys.DFS_NAMENODE_REPLICATION_INTERVAL_KEY, 1);
     conf.setInt(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, 1);
@@ -456,7 +479,8 @@ public class TestFSEditLogLoader {
 
       //set the storage policy of the directory
       fs.mkdir(new Path(testDir), new FsPermission("755"));
-      fs.getClient().getNamenode().setErasureCodingPolicy(testDir, null);
+      fs.getClient().getNamenode().setErasureCodingPolicy(
+          testDir, testECPolicy);
 
       // Create a file with striped block
       Path p = new Path(testFilePath);
@@ -464,7 +488,7 @@ public class TestFSEditLogLoader {
 
       fns.enterSafeMode(false);
       fns.saveNamespace(0, 0);
-      fns.leaveSafeMode();
+      fns.leaveSafeMode(false);
 
       // Add a striped block to the file
       BlockInfoStriped stripedBlk = new BlockInfoStriped(
@@ -473,7 +497,7 @@ public class TestFSEditLogLoader {
       file.toUnderConstruction(clientName, clientMachine);
       file.addBlock(stripedBlk);
       fns.getEditLog().logAddBlock(testFilePath, file);
-      file.toCompleteFile(System.currentTimeMillis());
+      TestINodeFile.toCompleteFile(file);
 
       //If the block by loaded is the same as above it means that
       //we have successfully applied the edit log to the fsimage.
@@ -528,7 +552,8 @@ public class TestFSEditLogLoader {
 
       //set the storage policy of the directory
       fs.mkdir(new Path(testDir), new FsPermission("755"));
-      fs.getClient().getNamenode().setErasureCodingPolicy(testDir, null);
+      fs.getClient().getNamenode().setErasureCodingPolicy(
+          testDir, testECPolicy);
 
       //create a file with striped blocks
       Path p = new Path(testFilePath);
@@ -539,10 +564,10 @@ public class TestFSEditLogLoader {
       file.toUnderConstruction(clientName, clientMachine);
       file.addBlock(stripedBlk);
       fns.getEditLog().logAddBlock(testFilePath, file);
-      file.toCompleteFile(System.currentTimeMillis());
+      TestINodeFile.toCompleteFile(file);
       fns.enterSafeMode(false);
       fns.saveNamespace(0, 0);
-      fns.leaveSafeMode();
+      fns.leaveSafeMode(false);
 
       //update the last block
       long newBlkNumBytes = 1024*8;
@@ -551,7 +576,7 @@ public class TestFSEditLogLoader {
       file.getLastBlock().setNumBytes(newBlkNumBytes);
       file.getLastBlock().setGenerationStamp(newTimestamp);
       fns.getEditLog().logUpdateBlocks(testFilePath, file, true);
-      file.toCompleteFile(System.currentTimeMillis());
+      TestINodeFile.toCompleteFile(file);
 
       //After the namenode restarts if the block by loaded is the same as above
       //(new block size and timestamp) it means that we have successfully
@@ -616,7 +641,7 @@ public class TestFSEditLogLoader {
       file.toUnderConstruction(clientName, clientMachine);
       file.addBlock(cBlk);
       fns.getEditLog().logAddBlock(testFilePath, file);
-      file.toCompleteFile(System.currentTimeMillis());
+      TestINodeFile.toCompleteFile(file);
       cluster.restartNameNodes();
       cluster.waitActive();
       fns = cluster.getNamesystem();
@@ -662,7 +687,7 @@ public class TestFSEditLogLoader {
       INodeFile file = (INodeFile)fns.getFSDirectory().getINode(testFilePath);
       file.toUnderConstruction(clientName, clientMachine);
       file.addBlock(cBlk);
-      file.toCompleteFile(System.currentTimeMillis());
+      TestINodeFile.toCompleteFile(file);
 
       long newBlkNumBytes = 1024*8;
       long newTimestamp = 1426222918+3600;
@@ -671,7 +696,7 @@ public class TestFSEditLogLoader {
       file.getLastBlock().setNumBytes(newBlkNumBytes);
       file.getLastBlock().setGenerationStamp(newTimestamp);
       fns.getEditLog().logUpdateBlocks(testFilePath, file, true);
-      file.toCompleteFile(System.currentTimeMillis());
+      TestINodeFile.toCompleteFile(file);
       cluster.restartNameNodes();
       cluster.waitActive();
       fns = cluster.getNamesystem();
@@ -685,5 +710,4 @@ public class TestFSEditLogLoader {
       }
     }
   }
-
 }

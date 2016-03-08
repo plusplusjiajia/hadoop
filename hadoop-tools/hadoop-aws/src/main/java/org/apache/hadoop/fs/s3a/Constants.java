@@ -79,6 +79,9 @@ public class Constants {
   public static final String MIN_MULTIPART_THRESHOLD = "fs.s3a.multipart.threshold";
   public static final long DEFAULT_MIN_MULTIPART_THRESHOLD = Integer.MAX_VALUE;
 
+  //enable multiobject-delete calls?
+  public static final String ENABLE_MULTI_DELETE = "fs.s3a.multiobjectdelete.enable";
+
   // comma separated list of directories
   public static final String BUFFER_DIR = "fs.s3a.buffer.dir";
 
@@ -113,4 +116,6 @@ public class Constants {
   public static final String S3N_FOLDER_SUFFIX = "_$folder$";
   public static final String FS_S3A_BLOCK_SIZE = "fs.s3a.block.size";
   public static final String FS_S3A = "s3a";
+
+  public static final int S3A_DEFAULT_PORT = -1;
 }

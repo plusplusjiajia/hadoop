@@ -43,6 +43,7 @@ import org.apache.hadoop.fs.CreateFlag;
 import org.apache.hadoop.fs.FileEncryptionInfo;
 import org.apache.hadoop.fs.FsServerDefaults;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.QuotaUsage;
 import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.fs.XAttr;
 import org.apache.hadoop.fs.XAttrSetFlag;
@@ -139,6 +140,7 @@ import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.HdfsFileStatusProto.File
 import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.LocatedBlockProto;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.LocatedBlockProto.Builder;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.LocatedBlocksProto;
+import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.QuotaUsageProto;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.RollingUpgradeStatusProto;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.SnapshotDiffReportEntryProto;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.SnapshotDiffReportProto;
@@ -526,13 +528,9 @@ public class PBHelperClient {
           .toArray(new String[storageIDsCount]);
     }
 
-    int[] indices = null;
-    final int indexCount = proto.getBlockIndexCount();
-    if (indexCount > 0) {
-      indices = new int[indexCount];
-      for (int i = 0; i < indexCount; i++) {
-        indices[i] = proto.getBlockIndex(i);
-      }
+    byte[] indices = null;
+    if (proto.hasBlockIndices()) {
+      indices = proto.getBlockIndices().toByteArray();
     }
 
     // Set values from the isCached list, re-using references from loc
@@ -814,10 +812,10 @@ public class PBHelperClient {
     }
     if (b instanceof LocatedStripedBlock) {
       LocatedStripedBlock sb = (LocatedStripedBlock) b;
-      int[] indices = sb.getBlockIndices();
+      byte[] indices = sb.getBlockIndices();
+      builder.setBlockIndices(PBHelperClient.getByteString(indices));
       Token<BlockTokenIdentifier>[] blockTokens = sb.getBlockTokens();
       for (int i = 0; i < indices.length; i++) {
-        builder.addBlockIndex(indices[i]);
         builder.addBlockTokens(PBHelperClient.convert(blockTokens[i]));
       }
     }
@@ -1421,12 +1419,37 @@ public class PBHelperClient {
         spaceConsumed(cs.getSpaceConsumed()).
         spaceQuota(cs.getSpaceQuota());
     if (cs.hasTypeQuotaInfos()) {
-      for (HdfsProtos.StorageTypeQuotaInfoProto info :
-          cs.getTypeQuotaInfos().getTypeQuotaInfoList()) {
-        StorageType type = convertStorageType(info.getType());
-        builder.typeConsumed(type, info.getConsumed());
-        builder.typeQuota(type, info.getQuota());
-      }
+      addStorageTypes(cs.getTypeQuotaInfos(), builder);
+    }
+    return builder.build();
+  }
+
+  public static QuotaUsage convert(QuotaUsageProto qu) {
+    if (qu == null) {
+      return null;
+    }
+    QuotaUsage.Builder builder = new QuotaUsage.Builder();
+    builder.fileAndDirectoryCount(qu.getFileAndDirectoryCount()).
+        quota(qu.getQuota()).
+        spaceConsumed(qu.getSpaceConsumed()).
+        spaceQuota(qu.getSpaceQuota());
+    if (qu.hasTypeQuotaInfos()) {
+      addStorageTypes(qu.getTypeQuotaInfos(), builder);
+    }
+    return builder.build();
+  }
+
+  public static QuotaUsageProto convert(QuotaUsage qu) {
+    if (qu == null) {
+      return null;
+    }
+    QuotaUsageProto.Builder builder = QuotaUsageProto.newBuilder();
+    builder.setFileAndDirectoryCount(qu.getFileAndDirectoryCount()).
+        setQuota(qu.getQuota()).
+        setSpaceConsumed(qu.getSpaceConsumed()).
+        setSpaceQuota(qu.getSpaceQuota());
+    if (qu.isTypeQuotaSet() || qu.isTypeConsumedAvailable()) {
+      builder.setTypeQuotaInfos(getBuilder(qu));
     }
     return builder.build();
   }
@@ -1539,6 +1562,8 @@ public class PBHelperClient {
         res.getMissingReplOneBlocks();
     result[ClientProtocol.GET_STATS_BYTES_IN_FUTURE_BLOCKS_IDX] =
         res.hasBlocksInFuture() ? res.getBlocksInFuture() : 0;
+    result[ClientProtocol.GET_STATS_PENDING_DELETION_BLOCKS_IDX] =
+        res.getPendingDeletionBlocks();
     return result;
   }
 
@@ -1908,6 +1933,11 @@ public class PBHelperClient {
       result.setBlocksInFuture(
           fsStats[ClientProtocol.GET_STATS_BYTES_IN_FUTURE_BLOCKS_IDX]);
     }
+    if (fsStats.length >=
+        ClientProtocol.GET_STATS_PENDING_DELETION_BLOCKS_IDX + 1) {
+      result.setPendingDeletionBlocks(
+          fsStats[ClientProtocol.GET_STATS_PENDING_DELETION_BLOCKS_IDX]);
+    }
     return result.build();
   }
 
@@ -1993,20 +2023,36 @@ public class PBHelperClient {
         setSpaceQuota(cs.getSpaceQuota());
 
     if (cs.isTypeQuotaSet() || cs.isTypeConsumedAvailable()) {
-      HdfsProtos.StorageTypeQuotaInfosProto.Builder isb =
-          HdfsProtos.StorageTypeQuotaInfosProto.newBuilder();
-      for (StorageType t: StorageType.getTypesSupportingQuota()) {
-        HdfsProtos.StorageTypeQuotaInfoProto info =
-            HdfsProtos.StorageTypeQuotaInfoProto.newBuilder().
-                setType(convertStorageType(t)).
-                setConsumed(cs.getTypeConsumed(t)).
-                setQuota(cs.getTypeQuota(t)).
-                build();
-        isb.addTypeQuotaInfo(info);
-      }
-      builder.setTypeQuotaInfos(isb);
+      builder.setTypeQuotaInfos(getBuilder(cs));
     }
     return builder.build();
+  }
+
+  private static void addStorageTypes(
+      HdfsProtos.StorageTypeQuotaInfosProto typeQuotaInfos,
+      QuotaUsage.Builder builder) {
+    for (HdfsProtos.StorageTypeQuotaInfoProto info :
+        typeQuotaInfos.getTypeQuotaInfoList()) {
+      StorageType type = convertStorageType(info.getType());
+      builder.typeConsumed(type, info.getConsumed());
+      builder.typeQuota(type, info.getQuota());
+    }
+  }
+
+  private static HdfsProtos.StorageTypeQuotaInfosProto.Builder getBuilder(
+      QuotaUsage qu) {
+    HdfsProtos.StorageTypeQuotaInfosProto.Builder isb =
+            HdfsProtos.StorageTypeQuotaInfosProto.newBuilder();
+    for (StorageType t: StorageType.getTypesSupportingQuota()) {
+      HdfsProtos.StorageTypeQuotaInfoProto info =
+          HdfsProtos.StorageTypeQuotaInfoProto.newBuilder().
+              setType(convertStorageType(t)).
+              setConsumed(qu.getTypeConsumed(t)).
+              setQuota(qu.getTypeQuota(t)).
+              build();
+      isb.addTypeQuotaInfo(info);
+    }
+    return isb;
   }
 
   public static DatanodeStorageProto convert(DatanodeStorage s) {
