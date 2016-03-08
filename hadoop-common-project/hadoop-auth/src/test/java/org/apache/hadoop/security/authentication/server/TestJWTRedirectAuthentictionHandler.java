@@ -411,8 +411,6 @@ public class TestJWTRedirectAuthentictionHandler extends
     getKdc().createPrincipal(new File(keytab), keytabUsers);
   }
 
-
-
   @After
   public void teardown() throws Exception {
     handler.destroy();
