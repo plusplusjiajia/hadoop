@@ -20,7 +20,7 @@ package org.apache.hadoop.minikdc;
 
 import org.apache.kerby.kerberos.kerb.client.JaasKrbUtil;
 import org.apache.kerby.kerberos.kerb.keytab.Keytab;
-import org.apache.kerby.kerberos.kerb.spec.base.PrincipalName;
+import org.apache.kerby.kerberos.kerb.type.base.PrincipalName;
 import org.junit.Assert;
 import org.junit.Test;
 
