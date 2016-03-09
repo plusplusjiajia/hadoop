@@ -19,9 +19,6 @@
 package org.apache.hadoop.minikdc;
 
 import org.apache.commons.io.Charsets;
-import org.apache.directory.server.protocol.shared.transport.AbstractTransport;
-import org.apache.directory.server.protocol.shared.transport.TcpTransport;
-import org.apache.directory.server.protocol.shared.transport.UdpTransport;
 import org.apache.kerby.kerberos.kerb.KrbException;
 import org.apache.kerby.kerberos.kerb.server.KdcConfigKey;
 import org.apache.kerby.kerberos.kerb.server.SimpleKdcServer;
@@ -33,7 +30,6 @@ import java.io.FileInputStream;
 import java.io.InputStreamReader;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
-import java.net.InetSocketAddress;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
@@ -315,7 +311,7 @@ public class MiniKdc {
     }
 
     simpleKdc.getKdcConfig().setString(KdcConfigKey.KDC_SERVICE_NAME,
-        conf.getProperty(INSTANCE));
+            conf.getProperty(INSTANCE));
 
 
   }
