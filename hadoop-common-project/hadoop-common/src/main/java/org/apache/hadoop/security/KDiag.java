@@ -19,9 +19,6 @@
 package org.apache.hadoop.security;
 
 import org.apache.commons.io.IOUtils;
-import org.apache.directory.server.kerberos.shared.keytab.Keytab;
-import org.apache.directory.server.kerberos.shared.keytab.KeytabEntry;
-import org.apache.directory.shared.kerberos.components.EncryptionKey;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.conf.Configured;
 import org.apache.hadoop.io.Text;
@@ -32,6 +29,10 @@ import org.apache.hadoop.util.Shell;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.util.Tool;
 import org.apache.hadoop.util.ToolRunner;
+import org.apache.kerby.kerberos.kerb.keytab.Keytab;
+import org.apache.kerby.kerberos.kerb.keytab.KeytabEntry;
+import org.apache.kerby.kerberos.kerb.type.base.EncryptionKey;
+import org.apache.kerby.kerberos.kerb.type.base.PrincipalName;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -500,16 +501,25 @@ public class KDiag extends Configured implements Tool, Closeable {
     title("Examining keytab %s", keytabFile);
     File kt = keytabFile.getCanonicalFile();
     verifyFileIsValid(kt, CAT_KERBEROS, "keytab");
-    List<KeytabEntry> entries = Keytab.read(kt).getEntries();
-    println("keytab entry count: %d", entries.size());
-    for (KeytabEntry entry : entries) {
-      EncryptionKey key = entry.getKey();
-      println(" %s: version=%d expires=%s encryption=%s",
-          entry.getPrincipalName(),
-          entry.getKeyVersion(),
-          entry.getTimeStamp(),
-          key.getKeyType());
+
+    Keytab keytab = Keytab.loadKeytab(kt);
+    List<PrincipalName> principals = keytab.getPrincipals();
+    println("keytab princial count: %d", principals.size());
+    int entrySize = 0;
+    for (PrincipalName principal : principals) {
+      List<KeytabEntry> entries = keytab.getKeytabEntries(principal);
+      entrySize = entrySize + entries.size();
+      for (KeytabEntry entry : entries) {
+        EncryptionKey key = entry.getKey();
+        println(" %s: version=%d expires=%s encryption=%s",
+                entry.getPrincipal(),
+                entry.getKvno(),
+                entry.getTimestamp(),
+                key.getKeyType());
+      }
     }
+    println("keytab entry count: %d", entrySize);
+
     endln();
   }
 

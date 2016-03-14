@@ -22,6 +22,7 @@ import org.apache.commons.io.Charsets;
 import org.apache.kerby.kerberos.kerb.KrbException;
 import org.apache.kerby.kerberos.kerb.server.KdcConfigKey;
 import org.apache.kerby.kerberos.kerb.server.SimpleKdcServer;
+import org.apache.kerby.util.NetworkUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -298,39 +299,41 @@ public class MiniKdc {
     if (transport == null) {
         transport = conf.getProperty(TRANSPORT);
     }
+    if (port == 0) {
+      port = NetworkUtil.getServerPort();
+    }
     if (transport.trim().equals("TCP")) {
-        simpleKdc.setAllowTcp(true);
-        simpleKdc.setAllowUdp(false);
-        simpleKdc.setKdcTcpPort(port);
+      simpleKdc.setAllowTcp(true);
+      simpleKdc.setAllowUdp(false);
+      simpleKdc.setKdcTcpPort(port);
     } else if (transport.trim().equals("UDP")) {
-        simpleKdc.setAllowUdp(true);
-        simpleKdc.setAllowTcp(false);
-        simpleKdc.setKdcUdpPort(port);
+      simpleKdc.setAllowUdp(true);
+      simpleKdc.setAllowTcp(false);
+      simpleKdc.setKdcUdpPort(port);
     } else {
       throw new IllegalArgumentException("Invalid transport: " + transport);
     }
 
     simpleKdc.getKdcConfig().setString(KdcConfigKey.KDC_SERVICE_NAME,
             conf.getProperty(INSTANCE));
-
-
   }
-    private void fixKdcServer() throws ClassNotFoundException, NoSuchMethodException, InvocationTargetException, IllegalAccessException {
-        // refresh the config
-        Class<?> classRef;
-        if (System.getProperty("java.vendor").contains("IBM")) {
-            classRef = Class.forName("com.ibm.security.krb5.internal.Config");
-        } else {
-            classRef = Class.forName("sun.security.krb5.Config");
-        }
-        Method refreshMethod = classRef.getMethod("refresh", new Class[0]);
-        refreshMethod.invoke(classRef, new Object[0]);
 
-        krb5conf = new File(workDir, "krb5.conf");
-        LOG.info("MiniKdc listening at port: {}", getPort());
-          LOG.info("MiniKdc setting JVM krb5.conf to: {}",
-                   krb5conf.getAbsolutePath());
+  private void fixKdcServer() throws ClassNotFoundException, NoSuchMethodException, InvocationTargetException, IllegalAccessException {
+    // refresh the config
+    Class<?> classRef;
+    if (System.getProperty("java.vendor").contains("IBM")) {
+      classRef = Class.forName("com.ibm.security.krb5.internal.Config");
+    } else {
+      classRef = Class.forName("sun.security.krb5.Config");
     }
+    Method refreshMethod = classRef.getMethod("refresh", new Class[0]);
+    refreshMethod.invoke(classRef, new Object[0]);
+
+    krb5conf = new File(workDir, "krb5.conf");
+    LOG.info("MiniKdc listening at port: {}", getPort());
+    LOG.info("MiniKdc setting JVM krb5.conf to: {}",
+            krb5conf.getAbsolutePath());
+  }
 
   /**
    * Stops the MiniKdc
