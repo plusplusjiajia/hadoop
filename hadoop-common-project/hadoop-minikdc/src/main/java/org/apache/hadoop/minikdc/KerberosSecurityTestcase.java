@@ -44,7 +44,6 @@ public class KerberosSecurityTestcase {
 
   @Before
   public void startMiniKdc() throws Exception {
-    Thread.sleep(2000);
     createTestDir();
     createMiniKdcConf();
 
