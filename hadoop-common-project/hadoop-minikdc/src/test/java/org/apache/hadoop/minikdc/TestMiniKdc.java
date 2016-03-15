@@ -40,7 +40,6 @@ import java.util.Set;
 public class TestMiniKdc extends KerberosSecurityTestcase {
   private static final boolean IBM_JAVA = System.getProperty("java.vendor")
       .contains("IBM");
-
   @Test
   public void testMiniKdcStart() {
     MiniKdc kdc = getKdc();
@@ -62,7 +61,7 @@ public class TestMiniKdc extends KerberosSecurityTestcase {
     }
 
     Assert.assertEquals(new HashSet<String>(Arrays.asList(
-                    "foo/bar@" + kdc.getRealm(), "bar/foo@" + kdc.getRealm())),
+            "foo/bar@" + kdc.getRealm(), "bar/foo@" + kdc.getRealm())),
             principals);
   }
 
@@ -171,4 +170,5 @@ public class TestMiniKdc extends KerberosSecurityTestcase {
       }
     }
   }
+
 }

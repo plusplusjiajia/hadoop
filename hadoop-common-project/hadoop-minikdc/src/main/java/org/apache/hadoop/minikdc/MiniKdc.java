@@ -29,7 +29,6 @@ import org.slf4j.LoggerFactory;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.InputStreamReader;
-import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.Arrays;
 import java.util.HashSet;
@@ -282,7 +281,7 @@ public class MiniKdc {
     simpleKdc = new SimpleKdcServer();
     prepareKdcServer();
     simpleKdc.init();
-    fixKdcServer();
+    initKDCServer();
     simpleKdc.start();
   }
 
@@ -315,7 +314,7 @@ public class MiniKdc {
             conf.getProperty(INSTANCE));
   }
 
-  private void fixKdcServer() throws ClassNotFoundException, NoSuchMethodException, InvocationTargetException, IllegalAccessException {
+  private void initKDCServer() throws Exception {
     // refresh the config
     Class<?> classRef;
     if (System.getProperty("java.vendor").contains("IBM")) {
