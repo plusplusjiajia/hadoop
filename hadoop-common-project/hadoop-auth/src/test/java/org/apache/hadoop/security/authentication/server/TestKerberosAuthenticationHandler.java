@@ -176,7 +176,7 @@ public class TestKerberosAuthenticationHandler
       Assert.assertEquals("Principals do not exist in the keytab",
           ex.getCause().getMessage());
     } catch (Throwable t) {
-//      Assert.fail("wrong exception: "+t);
+      Assert.fail("wrong exception: "+t);
     }
   }
 

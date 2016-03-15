@@ -376,15 +376,19 @@ public class MiniKdc {
   }
 
   /**
-   * Creates  multiple principals in the KDC and adds them to a keytab file.
+   * Creates multiple principals in the KDC and adds them to a keytab file.
    *
-   * @param keytabFile keytab file to add the created principal.s
+   * @param keytabFile keytab file to add the created principals.
    * @param principals principals to add to the KDC, do not include the domain.
    * @throws Exception thrown if the principals or the keytab file could not be
    * created.
    */
   public void createPrincipal(File keytabFile, String ... principals)
           throws Exception {
-    simpleKdc.createAndExportPrincipals(keytabFile, principals);
+    simpleKdc.createPrincipals(principals);
+    keytabFile.delete();
+    for (String principal : principals) {
+      simpleKdc.getKadmin().exportKeytab(keytabFile, principal);
+    }
   }
 }

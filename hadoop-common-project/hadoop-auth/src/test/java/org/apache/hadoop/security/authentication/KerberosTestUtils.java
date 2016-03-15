@@ -125,7 +125,7 @@ public class KerberosTestUtils {
       return Subject.doAs(subject, new PrivilegedExceptionAction<T>() {
         @Override
         public T run() throws Exception {
-          return callable.call();//
+          return callable.call();
         }
       });
     } catch (PrivilegedActionException ex) {

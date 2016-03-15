@@ -20,6 +20,7 @@ package org.apache.hadoop.minikdc;
 
 import org.apache.kerby.kerberos.kerb.client.JaasKrbUtil;
 import org.apache.kerby.kerberos.kerb.keytab.Keytab;
+import org.apache.kerby.kerberos.kerb.keytab.KeytabEntry;
 import org.apache.kerby.kerberos.kerb.type.base.PrincipalName;
 import org.junit.Assert;
 import org.junit.Test;
@@ -34,6 +35,7 @@ import java.security.Principal;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
@@ -50,27 +52,18 @@ public class TestMiniKdc extends KerberosSecurityTestcase {
     MiniKdc kdc = getKdc();
     File workDir = getWorkDir();
 
-    File keyTabFile = new File(workDir, "keytab");
-    kdc.createPrincipal(keyTabFile, "foo/bar", "bar/foo");
+    kdc.createPrincipal(new File(workDir, "keytab"), "foo/bar", "bar/foo");
+    List<PrincipalName> principalNameList =
+            Keytab.loadKeytab(new File(workDir, "keytab")).getPrincipals();
 
-    Keytab kt = new Keytab();
-    kt.load(keyTabFile);
-
-    Set<String> principals = new TreeSet<String>();
-    for (PrincipalName principalName : kt.getPrincipals()) {
+    Set<String> principals = new HashSet<String>();
+    for (PrincipalName principalName : principalNameList) {
       principals.add(principalName.getName());
     }
 
-    Assert.assertEquals(new TreeSet<String>(Arrays.asList(
-
-        "kadmin/" + kdc.getRealm() + "@" + kdc.getRealm(),
-        "krbtgt/" + kdc.getRealm() +"@" + kdc.getRealm(),
-        "foo/bar@" + kdc.getRealm(), "bar/foo@" + kdc.getRealm())),
+    Assert.assertEquals(new HashSet<String>(Arrays.asList(
+                    "foo/bar@" + kdc.getRealm(), "bar/foo@" + kdc.getRealm())),
             principals);
-
-    if(keyTabFile.exists()) {
-        keyTabFile.delete();
-    }
   }
 
   @Test
