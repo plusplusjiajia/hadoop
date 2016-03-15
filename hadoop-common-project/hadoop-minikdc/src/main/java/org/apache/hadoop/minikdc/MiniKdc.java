@@ -304,7 +304,7 @@ public class MiniKdc {
    * @return inputstream with the resource.
    */
   public static InputStream getResourceAsStream(String resourceName)
-          throws IOException {
+      throws IOException {
     ClassLoader cl = Thread.currentThread().getContextClassLoader();
     if (cl == null) {
       cl = MiniKdc.class.getClassLoader();
@@ -312,7 +312,7 @@ public class MiniKdc {
     InputStream is = cl.getResourceAsStream(resourceName);
     if (is == null) {
       throw new IOException("Can not read resource file '" +
-              resourceName + "'");
+          resourceName + "'");
     }
     return is;
   }
