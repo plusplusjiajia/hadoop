@@ -531,7 +531,6 @@ public class UserGroupInformation {
         KEYTAB_KERBEROS_OPTIONS.put("storeKey", "true");
       }
       KEYTAB_KERBEROS_OPTIONS.put("refreshKrb5Config", "true");
-      KEYTAB_KERBEROS_OPTIONS.put("debug", String.valueOf(true));
       KEYTAB_KERBEROS_OPTIONS.putAll(BASIC_JAAS_OPTIONS);      
     }
     private static final AppConfigurationEntry KEYTAB_KERBEROS_LOGIN =
@@ -679,7 +678,7 @@ public class UserGroupInformation {
    * 
    * @param user                The principal name to load from the ticket
    *                            cache
-   * @param ticketCache     the path to the ticket cache file
+   * @param ticketCachePath     the path to the ticket cache file
    *
    * @throws IOException        if the kerberos login fails
    */
@@ -739,7 +738,7 @@ public class UserGroupInformation {
   /**
    * Create a UserGroupInformation from a Subject with Kerberos principal.
    *
-   * @param subject               The KerberosPrincipal to use in UGI
+   * @param user               The KerberosPrincipal to use in UGI
    *
    * @throws IOException        if the kerberos login fails
    */

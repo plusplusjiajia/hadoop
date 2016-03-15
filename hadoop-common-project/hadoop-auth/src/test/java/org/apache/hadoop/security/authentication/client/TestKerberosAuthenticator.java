@@ -36,9 +36,9 @@ import java.util.concurrent.Callable;
 
 @RunWith(Parameterized.class)
 public class TestKerberosAuthenticator {
+  private boolean useTomcat = false;
   private static MiniKdc kdc;
   private static File workDir;
-  private boolean useTomcat = false;
   private static File keytabFile;
 
   public TestKerberosAuthenticator(boolean useTomcat) {

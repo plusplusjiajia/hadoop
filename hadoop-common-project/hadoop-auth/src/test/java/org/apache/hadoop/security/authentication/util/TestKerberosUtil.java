@@ -102,7 +102,7 @@ public class TestKerberosUtil {
   public void testGetPrincipalNamesMissingKeytab() {
     try {
       KerberosUtil.getPrincipalNames(testKeytab);
-      Assert.fail("Invalid keytab file");
+      Assert.fail("Exception should have been thrown");
     } catch (IllegalArgumentException e) {
       //expects exception
     } catch (IOException e) {
