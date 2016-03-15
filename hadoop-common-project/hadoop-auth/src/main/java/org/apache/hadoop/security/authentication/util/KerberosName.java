@@ -19,7 +19,6 @@ package org.apache.hadoop.security.authentication.util;
  */
 
 import java.io.IOException;
-import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
