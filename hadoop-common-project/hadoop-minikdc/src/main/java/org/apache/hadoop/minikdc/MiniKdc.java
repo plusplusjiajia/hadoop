@@ -19,6 +19,8 @@
 package org.apache.hadoop.minikdc;
 
 import org.apache.commons.io.Charsets;
+import org.apache.commons.io.FileUtils;
+import org.apache.commons.io.IOUtils;
 import org.apache.kerby.kerberos.kerb.KrbException;
 import org.apache.kerby.kerberos.kerb.server.KdcConfigKey;
 import org.apache.kerby.kerberos.kerb.server.SimpleKdcServer;
@@ -26,10 +28,14 @@ import org.apache.kerby.util.NetworkUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.lang.reflect.Method;
+import java.text.MessageFormat;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
@@ -281,8 +287,34 @@ public class MiniKdc {
     simpleKdc = new SimpleKdcServer();
     prepareKdcServer();
     simpleKdc.init();
-    initKDCServer();
+
     simpleKdc.start();
+  }
+
+  /**
+   * Convenience method that returns a resource as inputstream from the
+   * classpath.
+   * <p>
+   * It first attempts to use the Thread's context classloader and if not
+   * set it uses the class' classloader.
+   *
+   * @param resourceName resource to retrieve.
+   *
+   * @throws IOException thrown if resource cannot be loaded
+   * @return inputstream with the resource.
+   */
+  public static InputStream getResourceAsStream(String resourceName)
+          throws IOException {
+    ClassLoader cl = Thread.currentThread().getContextClassLoader();
+    if (cl == null) {
+      cl = MiniKdc.class.getClassLoader();
+    }
+    InputStream is = cl.getResourceAsStream(resourceName);
+    if (is == null) {
+      throw new IOException("Can not read resource file '" +
+              resourceName + "'");
+    }
+    return is;
   }
 
   private void prepareKdcServer() throws Exception {
@@ -312,9 +344,33 @@ public class MiniKdc {
 
     simpleKdc.getKdcConfig().setString(KdcConfigKey.KDC_SERVICE_NAME,
             conf.getProperty(INSTANCE));
-  }
 
-  private void initKDCServer() throws Exception {
+    StringBuilder sb = new StringBuilder();
+    InputStream is = getResourceAsStream("minikdc-krb5.conf");
+
+    BufferedReader r = null;
+
+    try {
+      r = new BufferedReader(new InputStreamReader(is, Charsets.UTF_8));
+      String line = r.readLine();
+
+      while (line != null) {
+        sb.append(line).append("{3}");
+        line = r.readLine();
+      }
+    } finally {
+      IOUtils.closeQuietly(r);
+      IOUtils.closeQuietly(is);
+    }
+    krb5conf = new File(workDir, "krb5.conf").getAbsoluteFile();
+    FileUtils.writeStringToFile(krb5conf,
+            MessageFormat.format(sb.toString(), getRealm(), getHost(),
+                    Integer.toString(getPort()), System.getProperty("line.separator")));
+    System.setProperty(JAVA_SECURITY_KRB5_CONF, krb5conf.getAbsolutePath());
+
+    System.setProperty(SUN_SECURITY_KRB5_DEBUG, conf.getProperty(DEBUG,
+            "false"));
+
     // refresh the config
     Class<?> classRef;
     if (System.getProperty("java.vendor").contains("IBM")) {
@@ -325,7 +381,6 @@ public class MiniKdc {
     Method refreshMethod = classRef.getMethod("refresh", new Class[0]);
     refreshMethod.invoke(classRef, new Object[0]);
 
-    krb5conf = new File(workDir, "krb5.conf");
     LOG.info("MiniKdc listening at port: {}", getPort());
     LOG.info("MiniKdc setting JVM krb5.conf to: {}",
             krb5conf.getAbsolutePath());
