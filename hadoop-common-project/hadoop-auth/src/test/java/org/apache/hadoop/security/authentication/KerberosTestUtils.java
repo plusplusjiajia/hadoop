@@ -20,10 +20,8 @@ import javax.security.auth.login.Configuration;
 import javax.security.auth.login.LoginContext;
 
 import org.apache.hadoop.security.authentication.util.KerberosUtil;
-import org.apache.kerby.kerberos.kerb.client.JaasKrbUtil;
 
 import java.io.File;
-import java.io.IOException;
 import java.security.Principal;
 import java.security.PrivilegedActionException;
 import java.security.PrivilegedExceptionAction;
@@ -40,7 +38,7 @@ import static org.apache.hadoop.util.PlatformName.IBM_JAVA;
  * Test helper class for Java Kerberos setup.
  */
 public class KerberosTestUtils {
-  private static String keytabFile = new File(createBasedir(),
+  private static String keytabFile = new File(System.getProperty("test.dir", "target"),
           UUID.randomUUID().toString() + ".keytab").getAbsolutePath();
 
   public static String getRealm() {
@@ -59,17 +57,6 @@ public class KerberosTestUtils {
     return keytabFile;
   }
 
-  private static File createBasedir() {
-      File basedir = new File(System.getProperty("test.dir", "target"));
-      if (!basedir.exists() && !basedir.mkdirs()) {
-          try {
-              throw new IOException();
-          } catch (IOException e) {
-              e.printStackTrace();
-          }
-      }
-      return basedir;
-  }
   private static class KerberosConfiguration extends Configuration {
     private String principal;
 
@@ -121,7 +108,12 @@ public class KerberosTestUtils {
   public static <T> T doAs(String principal, final Callable<T> callable) throws Exception {
     LoginContext loginContext = null;
     try {
-      Subject subject = JaasKrbUtil.loginUsingKeytab(principal, new File(keytabFile));
+      Set<Principal> principals = new HashSet<Principal>();
+      principals.add(new KerberosPrincipal(KerberosTestUtils.getClientPrincipal()));
+      Subject subject = new Subject(false, principals, new HashSet<Object>(), new HashSet<Object>());
+      loginContext = new LoginContext("", subject, null, new KerberosConfiguration(principal));
+      loginContext.login();
+      subject = loginContext.getSubject();
       return Subject.doAs(subject, new PrivilegedExceptionAction<T>() {
         @Override
         public T run() throws Exception {
