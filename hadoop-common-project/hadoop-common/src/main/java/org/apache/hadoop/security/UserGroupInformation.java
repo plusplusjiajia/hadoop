@@ -738,7 +738,7 @@ public class UserGroupInformation {
   /**
    * Create a UserGroupInformation from a Subject with Kerberos principal.
    *
-   * @param user               The KerberosPrincipal to use in UGI
+   * @param user                The KerberosPrincipal to use in UGI
    *
    * @throws IOException        if the kerberos login fails
    */
