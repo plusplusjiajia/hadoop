@@ -18,9 +18,7 @@
 package org.apache.hadoop.minikdc;
 
 import org.junit.After;
-import org.junit.AfterClass;
 import org.junit.Before;
-import org.junit.BeforeClass;
 
 import java.io.File;
 import java.util.Properties;
@@ -68,7 +66,7 @@ public class KerberosSecurityTestcase {
   }
 
   @After
-  public void stopMiniKdc() throws InterruptedException {
+  public void stopMiniKdc() {
     if (kdc != null) {
       kdc.stop();
     }
