@@ -39,7 +39,7 @@ import static org.apache.hadoop.util.PlatformName.IBM_JAVA;
  */
 public class KerberosTestUtils {
   private static String keytabFile = new File(System.getProperty("test.dir", "target"),
-          UUID.randomUUID().toString() + ".keytab").getAbsolutePath();
+          UUID.randomUUID().toString()).getAbsolutePath();
 
   public static String getRealm() {
     return "EXAMPLE.COM";
