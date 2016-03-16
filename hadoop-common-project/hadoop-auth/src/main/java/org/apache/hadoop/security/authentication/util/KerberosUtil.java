@@ -17,10 +17,7 @@
  */
 package org.apache.hadoop.security.authentication.util;
 
-import org.apache.kerby.kerberos.kerb.keytab.Keytab;
-import org.apache.kerby.kerberos.kerb.type.base.PrincipalName;
-import org.ietf.jgss.GSSException;
-import org.ietf.jgss.Oid;
+import static org.apache.hadoop.util.PlatformName.IBM_JAVA;
 
 import java.io.File;
 import java.io.IOException;
@@ -36,7 +33,10 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.regex.Pattern;
 
-import static org.apache.hadoop.util.PlatformName.IBM_JAVA;
+import org.apache.kerby.kerberos.kerb.keytab.Keytab;
+import org.apache.kerby.kerberos.kerb.type.base.PrincipalName;
+import org.ietf.jgss.GSSException;
+import org.ietf.jgss.Oid;
 
 import javax.security.auth.Subject;
 import javax.security.auth.kerberos.KerberosTicket;

@@ -30,12 +30,12 @@ import javax.security.auth.login.Configuration;
 import javax.security.auth.login.LoginContext;
 import java.io.File;
 import java.security.Principal;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
+import java.util.Map;
+import java.util.HashSet;
+import java.util.HashMap;
+import java.util.Arrays;
 
 public class TestMiniKdc extends KerberosSecurityTestcase {
   private static final boolean IBM_JAVA = System.getProperty("java.vendor")

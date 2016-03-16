@@ -16,15 +16,15 @@ package org.apache.hadoop.security.authentication.client;
 import org.apache.hadoop.minikdc.MiniKdc;
 import org.apache.hadoop.security.authentication.KerberosTestUtils;
 import org.apache.hadoop.security.authentication.server.AuthenticationFilter;
-import org.apache.hadoop.security.authentication.server.KerberosAuthenticationHandler;
 import org.apache.hadoop.security.authentication.server.PseudoAuthenticationHandler;
+import org.apache.hadoop.security.authentication.server.KerberosAuthenticationHandler;
 import org.apache.kerby.kerberos.kerb.KrbException;
 import org.junit.AfterClass;
 import org.junit.Assert;
 import org.junit.BeforeClass;
-import org.junit.Test;
-import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
+import org.junit.runner.RunWith;
+import org.junit.Test;
 
 import java.io.File;
 import java.net.HttpURLConnection;
