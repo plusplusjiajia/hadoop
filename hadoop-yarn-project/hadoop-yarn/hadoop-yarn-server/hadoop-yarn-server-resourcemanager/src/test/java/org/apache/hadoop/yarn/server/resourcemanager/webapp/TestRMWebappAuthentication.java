@@ -125,6 +125,7 @@ public class TestRMWebappAuthentication {
       testMiniKDC.start();
       getKdc().createPrincipal(httpSpnegoKeytabFile, "HTTP/localhost",
         "client", UserGroupInformation.getLoginUser().getShortUserName());
+      getKdc().getRealm();
       miniKDCStarted = true;
     }
   }

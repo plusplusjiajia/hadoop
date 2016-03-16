@@ -381,12 +381,6 @@ public class KerberosName {
    * @throws IOException throws if something is wrong with the rules
    */
   public String getShortName() throws IOException {
-    try {
-      defaultRealm = KerberosUtil.getDefaultRealm();
-    } catch (Exception ke) {
-      LOG.debug("Kerberos krb5 configuration not found, setting default realm to empty");
-      defaultRealm="";
-    }
     String[] params;
     if (hostName == null) {
       // if it is already simple, just return it

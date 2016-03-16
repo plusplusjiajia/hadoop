@@ -206,7 +206,7 @@ public class MiniKdc {
   }
 
   public void setTransport(String transport) {
-      this.transport = transport;
+    this.transport = transport;
   }
   /**
    * Creates a MiniKdc.
@@ -225,8 +225,8 @@ public class MiniKdc {
               + missingProperties);
     }
     this.workDir = new File(workDir, Long.toString(System.currentTimeMillis()));
-    if (! this.workDir.exists()
-            && ! this.workDir.mkdirs()) {
+    if (!this.workDir.exists()
+            && !this.workDir.mkdirs()) {
       throw new RuntimeException("Cannot create directory " + this.workDir);
     }
     LOG.info("Configuration:");
@@ -324,7 +324,7 @@ public class MiniKdc {
     simpleKdc.setKdcHost(getHost());
     simpleKdc.setKdcRealm(realm);
     if (transport == null) {
-        transport = conf.getProperty(TRANSPORT);
+      transport = conf.getProperty(TRANSPORT);
     }
     if (port == 0) {
       port = NetworkUtil.getServerPort();
@@ -425,7 +425,7 @@ public class MiniKdc {
    */
   public synchronized void createPrincipal(String principal, String password)
           throws Exception {
-      simpleKdc.createPrincipal(principal, password);
+    simpleKdc.createPrincipal(principal, password);
   }
 
   /**
@@ -439,7 +439,9 @@ public class MiniKdc {
   public void createPrincipal(File keytabFile, String ... principals)
           throws Exception {
     simpleKdc.createPrincipals(principals);
-    keytabFile.delete();
+    if (keytabFile.exists() && !keytabFile.delete()) {
+      LOG.error("Failed to delete keytab file: " + keytabFile);
+    }
     for (String principal : principals) {
       simpleKdc.getKadmin().exportKeytab(keytabFile, principal);
     }

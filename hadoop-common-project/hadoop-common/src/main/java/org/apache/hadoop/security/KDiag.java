@@ -502,12 +502,12 @@ public class KDiag extends Configured implements Tool, Closeable {
     File kt = keytabFile.getCanonicalFile();
     verifyFileIsValid(kt, CAT_KERBEROS, "keytab");
 
-    Keytab keytab = Keytab.loadKeytab(kt);
-    List<PrincipalName> principals = keytab.getPrincipals();
+    Keytab loadKeytab = Keytab.loadKeytab(kt);
+    List<PrincipalName> principals = loadKeytab.getPrincipals();
     println("keytab princial count: %d", principals.size());
     int entrySize = 0;
-    for (PrincipalName principal : principals) {
-      List<KeytabEntry> entries = keytab.getKeytabEntries(principal);
+    for (PrincipalName princ : principals) {
+      List<KeytabEntry> entries = loadKeytab.getKeytabEntries(princ);
       entrySize = entrySize + entries.size();
       for (KeytabEntry entry : entries) {
         EncryptionKey key = entry.getKey();

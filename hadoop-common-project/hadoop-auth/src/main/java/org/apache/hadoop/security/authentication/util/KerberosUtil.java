@@ -200,14 +200,14 @@ public class KerberosUtil {
    *          If keytab entries cannot be read from the file.
    */
   static final String[] getPrincipalNames(String keytabFileName) throws IOException {
-      Keytab keytab = Keytab.loadKeytab(new File(keytabFileName));
-      Set<String> principals = new HashSet<String>();
-      List<PrincipalName> entries = keytab.getPrincipals();
-      for (PrincipalName entry: entries){
-        principals.add(entry.getName().replace("\\", "/"));
-      }
-      return principals.toArray(new String[0]);
+    Keytab keytab = Keytab.loadKeytab(new File(keytabFileName));
+    Set<String> principals = new HashSet<String>();
+    List<PrincipalName> entries = keytab.getPrincipals();
+    for (PrincipalName entry : entries) {
+      principals.add(entry.getName().replace("\\", "/"));
     }
+    return principals.toArray(new String[0]);
+  }
 
   /**
    * Get all the unique principals from keytabfile which matches a pattern.

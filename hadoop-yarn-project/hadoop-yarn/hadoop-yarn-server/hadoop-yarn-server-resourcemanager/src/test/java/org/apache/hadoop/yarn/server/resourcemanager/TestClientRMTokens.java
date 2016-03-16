@@ -116,7 +116,7 @@ public class TestClientRMTokens {
 
       // Create a user for the renewr and fake the authentication-method
       UserGroupInformation loggedInUser = UserGroupInformation
-          .createRemoteUser("testrenewer@APACHE.ORG");
+          .createRemoteUser("testrenewer@EXAMPLE.COM");
       Assert.assertEquals("testrenewer", loggedInUser.getShortUserName());
       // Default realm is APACHE.ORG
       loggedInUser.setAuthenticationMethod(AuthenticationMethod.KERBEROS);
