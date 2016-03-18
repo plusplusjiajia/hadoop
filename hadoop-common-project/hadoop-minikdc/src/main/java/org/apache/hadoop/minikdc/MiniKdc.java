@@ -439,8 +439,10 @@ public class MiniKdc {
   public void createPrincipal(File keytabFile, String ... principals)
           throws Exception {
     simpleKdc.createPrincipals(principals);
-    if (keytabFile.exists() && !keytabFile.delete()) {
-      LOG.error("Failed to delete keytab file: " + keytabFile);
+    synchronized (this) {
+      if (keytabFile.exists() && !keytabFile.delete()) {
+        LOG.error("Failed to delete keytab file: " + keytabFile);
+      }
     }
     for (String principal : principals) {
       simpleKdc.getKadmin().exportKeytab(keytabFile, principal);
