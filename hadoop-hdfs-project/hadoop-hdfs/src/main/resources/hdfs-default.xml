@@ -384,6 +384,15 @@
 </property>
 
 <property>
+  <name>dfs.namenode.edits.dir.required</name>
+  <value></value>
+  <description>This should be a subset of dfs.namenode.edits.dir,
+      to ensure that the transaction (edits) file
+      in these places is always up-to-date.
+  </description>
+</property>
+
+<property>
   <name>dfs.namenode.shared.edits.dir</name>
   <value></value>
   <description>A directory on shared storage between the multiple namenodes
@@ -2594,6 +2603,24 @@
   <description>When listing encryption zones, the maximum number of zones
     that will be returned in a batch. Fetching the list incrementally in
     batches improves namenode performance.
+  </description>
+</property>
+
+<property>
+  <name>dfs.namenode.edekcacheloader.interval.ms</name>
+  <value>1000</value>
+  <description>When KeyProvider is configured, the interval time of warming
+    up edek cache on NN starts up / becomes active. All edeks will be loaded
+    from KMS into provider cache. The edek cache loader will try to warm up the
+    cache until succeed or NN leaves active state.
+  </description>
+</property>
+
+<property>
+  <name>dfs.namenode.edekcacheloader.initial.delay.ms</name>
+  <value>3000</value>
+  <description>When KeyProvider is configured, the time delayed until the first
+    attempt to warm up edek cache on NN start up / become active.
   </description>
 </property>
 
