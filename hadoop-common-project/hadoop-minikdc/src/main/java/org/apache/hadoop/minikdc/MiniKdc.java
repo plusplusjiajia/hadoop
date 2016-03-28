@@ -445,7 +445,9 @@ public class MiniKdc {
       LOG.error("Failed to delete keytab file: " + keytabFile);
     }
     for (String principal : principals) {
-      simpleKdc.getKadmin().exportKeytab(keytabFile, principal);
+      synchronized (this) {
+        simpleKdc.getKadmin().exportKeytab(keytabFile, principal);
+      }
     }
   }
 }
