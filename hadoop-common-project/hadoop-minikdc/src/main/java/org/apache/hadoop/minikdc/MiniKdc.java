@@ -47,12 +47,6 @@ import java.util.Set;
  * <p>
  * <b>From within testcases:</b>
  * <p>
- * MiniKdc sets 2 System properties when started and un-sets them when stopped:
- * <ul>
- *   <li>java.security.krb5.conf: set to the MiniKDC real/host/port</li>
- *   <li>sun.security.krb5.debug: set to the debug value provided in the
- *   configuration</li>
- * </ul>
  * Because of this, multiple MiniKdc instances cannot be started in parallel.
  * For example, running testcases in parallel that start a KDC each. To
  * accomplish this a single MiniKdc should be used for all testcases running
@@ -68,7 +62,6 @@ import java.util.Set;
  *   <li>max.ticket.lifetime=86400000 (1 day)</li>
  *   <li>max.renewable.lifetime=604800000 (7 days)</li>
  *   <li>transport=TCP</li>
- *   <li>debug=false</li>
  * </ul>
  * The generated krb5.conf forces TCP connections.
  */
@@ -76,8 +69,6 @@ public class MiniKdc {
 
   public static final String JAVA_SECURITY_KRB5_CONF =
       "java.security.krb5.conf";
-  public static final String SUN_SECURITY_KRB5_DEBUG =
-      "sun.security.krb5.debug";
 
   public static void main(String[] args) throws Exception {
     if (args.length < 4) {
@@ -153,7 +144,6 @@ public class MiniKdc {
   public static final String MAX_TICKET_LIFETIME = "max.ticket.lifetime";
   public static final String MAX_RENEWABLE_LIFETIME = "max.renewable.lifetime";
   public static final String TRANSPORT = "transport";
-  public static final String DEBUG = "debug";
 
   private static final Set<String> PROPERTIES = new HashSet<String>();
   private static final Properties DEFAULT_CONFIG = new Properties();
@@ -177,7 +167,6 @@ public class MiniKdc {
     DEFAULT_CONFIG.setProperty(TRANSPORT, "TCP");
     DEFAULT_CONFIG.setProperty(MAX_TICKET_LIFETIME, "86400000");
     DEFAULT_CONFIG.setProperty(MAX_RENEWABLE_LIFETIME, "604800000");
-    DEFAULT_CONFIG.setProperty(DEBUG, "false");
   }
 
   /**
@@ -289,33 +278,13 @@ public class MiniKdc {
     simpleKdc.start();
   }
 
-  public void resetDefaultRealm() throws IOException {
+  private void resetDefaultRealm() throws IOException {
     InputStream templateResource = new FileInputStream(
             getKrb5conf().getAbsolutePath());
     String content = IOUtil.readInput(templateResource);
     content = content.replaceAll("default_realm = .*\n",
             "default_realm = " + getRealm() + "\n");
     IOUtil.writeFile(content, getKrb5conf());
-  }
-
-  public static String getDefaultRealm()
-          throws ClassNotFoundException, NoSuchMethodException,
-          IllegalArgumentException, IllegalAccessException,
-          InvocationTargetException {
-    Object kerbConf;
-    Class<?> classRef;
-    Method getInstanceMethod;
-    Method getDefaultRealmMethod;
-    if (System.getProperty("java.vendor").contains("IBM")) {
-      classRef = Class.forName("com.ibm.security.krb5.internal.Config");
-    } else {
-      classRef = Class.forName("sun.security.krb5.Config");
-    }
-    getInstanceMethod = classRef.getMethod("getInstance", new Class[0]);
-    kerbConf = getInstanceMethod.invoke(classRef, new Object[0]);
-    getDefaultRealmMethod = classRef.getDeclaredMethod("getDefaultRealm",
-            new Class[0]);
-    return (String)getDefaultRealmMethod.invoke(kerbConf, new Object[0]);
   }
 
   /**
@@ -347,8 +316,6 @@ public class MiniKdc {
   private void prepareKdcServer() throws Exception {
     // transport
     simpleKdc.setWorkDir(workDir);
-    System.setProperty("sun.security.krb5.debug",  conf.getProperty(DEBUG,
-            "false"));
     simpleKdc.setKdcHost(getHost());
     simpleKdc.setKdcRealm(realm);
     if (transport == null) {
@@ -357,18 +324,19 @@ public class MiniKdc {
     if (port == 0) {
       port = NetworkUtil.getServerPort();
     }
-    if (transport.trim().equals("TCP")) {
-      simpleKdc.setAllowTcp(true);
-      simpleKdc.setAllowUdp(false);
-      simpleKdc.setKdcTcpPort(port);
-    } else if (transport.trim().equals("UDP")) {
-      simpleKdc.setAllowUdp(true);
-      simpleKdc.setAllowTcp(false);
-      simpleKdc.setKdcUdpPort(port);
+    if (transport != null) {
+      if (transport.trim().equals("TCP")) {
+        simpleKdc.setKdcTcpPort(port);
+        simpleKdc.setAllowUdp(false);
+      } else if (transport.trim().equals("UDP")) {
+        simpleKdc.setKdcUdpPort(port);
+        simpleKdc.setAllowTcp(false);
+      } else {
+        throw new IllegalArgumentException("Invalid transport: " + transport);
+      }
     } else {
-      throw new IllegalArgumentException("Invalid transport: " + transport);
+      throw new IllegalArgumentException("Need to set transport!");
     }
-
     simpleKdc.getKdcConfig().setString(KdcConfigKey.KDC_SERVICE_NAME,
             conf.getProperty(INSTANCE));
   }
@@ -378,8 +346,6 @@ public class MiniKdc {
    */
   public synchronized void stop() {
     if (simpleKdc != null) {
-      System.getProperties().remove(JAVA_SECURITY_KRB5_CONF);
-      System.getProperties().remove(SUN_SECURITY_KRB5_DEBUG);
       try {
         simpleKdc.stop();
       } catch (KrbException e) {
