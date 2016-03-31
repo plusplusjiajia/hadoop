@@ -18,23 +18,21 @@
 
 package org.apache.hadoop.minikdc;
 import org.apache.commons.io.Charsets;
-import org.apache.commons.io.FileUtils;
-import org.apache.commons.io.IOUtils;
 import org.apache.kerby.kerberos.kerb.KrbException;
 import org.apache.kerby.kerberos.kerb.server.KdcConfigKey;
 import org.apache.kerby.kerberos.kerb.server.SimpleKdcServer;
+import org.apache.kerby.util.IOUtil;
 import org.apache.kerby.util.NetworkUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.IOException;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
-import java.text.MessageFormat;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
@@ -271,6 +269,7 @@ public class MiniKdc {
   }
 
   public File getKrb5conf() {
+    krb5conf = new File(System.getProperty(JAVA_SECURITY_KRB5_CONF));
     return krb5conf;
   }
 
@@ -286,8 +285,37 @@ public class MiniKdc {
     simpleKdc = new SimpleKdcServer();
     prepareKdcServer();
     simpleKdc.init();
-
+    resetDefaultRealm();
     simpleKdc.start();
+  }
+
+  public void resetDefaultRealm() throws IOException {
+    InputStream templateResource = new FileInputStream(
+            getKrb5conf().getAbsolutePath());
+    String content = IOUtil.readInput(templateResource);
+    content = content.replaceAll("default_realm = .*\n",
+            "default_realm = " + getRealm() + "\n");
+    IOUtil.writeFile(content, getKrb5conf());
+  }
+
+  public static String getDefaultRealm()
+          throws ClassNotFoundException, NoSuchMethodException,
+          IllegalArgumentException, IllegalAccessException,
+          InvocationTargetException {
+    Object kerbConf;
+    Class<?> classRef;
+    Method getInstanceMethod;
+    Method getDefaultRealmMethod;
+    if (System.getProperty("java.vendor").contains("IBM")) {
+      classRef = Class.forName("com.ibm.security.krb5.internal.Config");
+    } else {
+      classRef = Class.forName("sun.security.krb5.Config");
+    }
+    getInstanceMethod = classRef.getMethod("getInstance", new Class[0]);
+    kerbConf = getInstanceMethod.invoke(classRef, new Object[0]);
+    getDefaultRealmMethod = classRef.getDeclaredMethod("getDefaultRealm",
+            new Class[0]);
+    return (String)getDefaultRealmMethod.invoke(kerbConf, new Object[0]);
   }
 
   /**
@@ -343,46 +371,6 @@ public class MiniKdc {
 
     simpleKdc.getKdcConfig().setString(KdcConfigKey.KDC_SERVICE_NAME,
             conf.getProperty(INSTANCE));
-
-    StringBuilder sb = new StringBuilder();
-    InputStream is = getResourceAsStream("minikdc-krb5.conf");
-
-    BufferedReader r = null;
-
-    try {
-      r = new BufferedReader(new InputStreamReader(is, Charsets.UTF_8));
-      String line = r.readLine();
-
-      while (line != null) {
-        sb.append(line).append("{3}");
-        line = r.readLine();
-      }
-    } finally {
-      IOUtils.closeQuietly(r);
-      IOUtils.closeQuietly(is);
-    }
-    krb5conf = new File(workDir, "krb5.conf").getAbsoluteFile();
-    FileUtils.writeStringToFile(krb5conf,
-            MessageFormat.format(sb.toString(), getRealm(), getHost(),
-                    Integer.toString(getPort()), System.getProperty("line.separator")));
-    System.setProperty(JAVA_SECURITY_KRB5_CONF, krb5conf.getAbsolutePath());
-
-    System.setProperty(SUN_SECURITY_KRB5_DEBUG, conf.getProperty(DEBUG,
-            "false"));
-
-    // refresh the config
-    Class<?> classRef;
-    if (System.getProperty("java.vendor").contains("IBM")) {
-      classRef = Class.forName("com.ibm.security.krb5.internal.Config");
-    } else {
-      classRef = Class.forName("sun.security.krb5.Config");
-    }
-    Method refreshMethod = classRef.getMethod("refresh", new Class[0]);
-    refreshMethod.invoke(classRef, new Object[0]);
-
-    LOG.info("MiniKdc listening at port: {}", getPort());
-    LOG.info("MiniKdc setting JVM krb5.conf to: {}",
-            krb5conf.getAbsolutePath());
   }
 
   /**
