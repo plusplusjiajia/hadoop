@@ -16,18 +16,17 @@
  * limitations under the License.
  */
 
-package org.apache.hadoop.ipc;
+package org.apache.hadoop.metrics2.util;
 
-import org.apache.hadoop.classification.InterfaceAudience;
-import org.apache.hadoop.security.UserGroupInformation;
+import java.util.Map;
 
-/**
- * Interface which allows extracting information necessary to
- * create schedulable identity strings.
- */
-@InterfaceAudience.Private
-public interface Schedulable {
-  public UserGroupInformation getUserGroupInformation();
+public interface QuantileEstimator {
 
-  int getPriorityLevel();
+  void insert(long value);
+
+  Map<Quantile, Long> snapshot();
+
+  long getCount();
+
+  void clear();
 }
