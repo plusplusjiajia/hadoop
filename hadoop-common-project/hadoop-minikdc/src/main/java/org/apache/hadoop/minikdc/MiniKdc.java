@@ -45,6 +45,11 @@ import java.util.Set;
  * <p>
  * <b>From within testcases:</b>
  * <p>
+ * MiniKdc sets one System property when started and un-set when stopped:
+ * <ul>
+ *   <li>sun.security.krb5.debug: set to the debug value provided in the
+ *   configuration</li>
+ * </ul>
  * Because of this, multiple MiniKdc instances cannot be started in parallel.
  * For example, running testcases in parallel that start a KDC each. To
  * accomplish this a single MiniKdc should be used for all testcases running
@@ -60,6 +65,7 @@ import java.util.Set;
  *   <li>max.ticket.lifetime=86400000 (1 day)</li>
  *   <li>max.renewable.lifetime=604800000 (7 days)</li>
  *   <li>transport=TCP</li>
+ *   <li>debug=false</li>
  * </ul>
  * The generated krb5.conf forces TCP connections.
  */
@@ -67,6 +73,8 @@ public class MiniKdc {
 
   public static final String JAVA_SECURITY_KRB5_CONF =
       "java.security.krb5.conf";
+  public static final String SUN_SECURITY_KRB5_DEBUG =
+      "sun.security.krb5.debug";
 
   public static void main(String[] args) throws Exception {
     if (args.length < 4) {
@@ -142,6 +150,7 @@ public class MiniKdc {
   public static final String MAX_TICKET_LIFETIME = "max.ticket.lifetime";
   public static final String MAX_RENEWABLE_LIFETIME = "max.renewable.lifetime";
   public static final String TRANSPORT = "transport";
+  public static final String DEBUG = "debug";
 
   private static final Set<String> PROPERTIES = new HashSet<String>();
   private static final Properties DEFAULT_CONFIG = new Properties();
@@ -165,6 +174,7 @@ public class MiniKdc {
     DEFAULT_CONFIG.setProperty(TRANSPORT, "TCP");
     DEFAULT_CONFIG.setProperty(MAX_TICKET_LIFETIME, "86400000");
     DEFAULT_CONFIG.setProperty(MAX_RENEWABLE_LIFETIME, "604800000");
+    DEFAULT_CONFIG.setProperty(DEBUG, "false");
   }
 
   /**
@@ -185,6 +195,7 @@ public class MiniKdc {
   private File workDir;
   private File krb5conf;
   private String transport;
+  private boolean krb5Debug;
 
   public List<String> getPrincipals() throws KrbException {
     return simpleKdc.getKadmin().getPrincipals();
@@ -311,6 +322,9 @@ public class MiniKdc {
     }
     simpleKdc.getKdcConfig().setString(KdcConfigKey.KDC_SERVICE_NAME,
             conf.getProperty(INSTANCE));
+    if (conf.getProperty(DEBUG) != null) {
+      krb5Debug = getAndSet(SUN_SECURITY_KRB5_DEBUG, conf.getProperty(DEBUG));
+    }
   }
 
   /**
@@ -322,6 +336,11 @@ public class MiniKdc {
         simpleKdc.stop();
       } catch (KrbException e) {
         e.printStackTrace();
+      } finally {
+        if(conf.getProperty(DEBUG) != null) {
+          System.setProperty(SUN_SECURITY_KRB5_DEBUG,
+                  Boolean.toString(krb5Debug));
+        }
       }
     }
     delete(workDir);
@@ -375,5 +394,18 @@ public class MiniKdc {
         simpleKdc.getKadmin().exportKeytab(keytabFile, principal);
       }
     }
+  }
+
+  /**
+   * Set the System property; return the old value for caching.
+   *
+   * @param sysprop property
+   * @param debug true or false
+   * @return the previous value
+   */
+  private boolean getAndSet(String sysprop, String debug) {
+    boolean old = Boolean.getBoolean(sysprop);
+    System.setProperty(sysprop, debug);
+    return old;
   }
 }
