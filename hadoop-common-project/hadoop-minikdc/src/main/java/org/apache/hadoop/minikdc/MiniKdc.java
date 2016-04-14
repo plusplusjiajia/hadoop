@@ -285,6 +285,7 @@ public class MiniKdc {
     simpleKdc.init();
     resetDefaultRealm();
     simpleKdc.start();
+    LOG.info("MiniKdc stated.");
   }
 
   private void resetDefaultRealm() throws IOException {
@@ -344,6 +345,12 @@ public class MiniKdc {
       }
     }
     delete(workDir);
+    try {
+      Thread.sleep(1000);
+    } catch (InterruptedException e) {
+      e.printStackTrace();
+    }
+    LOG.info("MiniKdc stopped.");
   }
 
   private void delete(File f) {

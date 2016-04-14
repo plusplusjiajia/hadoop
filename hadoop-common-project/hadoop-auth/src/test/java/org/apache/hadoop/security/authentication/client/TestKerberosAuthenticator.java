@@ -13,15 +13,13 @@
  */
 package org.apache.hadoop.security.authentication.client;
 
-import org.apache.hadoop.minikdc.MiniKdc;
+import org.apache.hadoop.minikdc.KerberosSecurityTestcase;
 import org.apache.hadoop.security.authentication.KerberosTestUtils;
 import org.apache.hadoop.security.authentication.server.AuthenticationFilter;
 import org.apache.hadoop.security.authentication.server.PseudoAuthenticationHandler;
 import org.apache.hadoop.security.authentication.server.KerberosAuthenticationHandler;
-import org.apache.kerby.kerberos.kerb.KrbException;
-import org.junit.AfterClass;
 import org.junit.Assert;
-import org.junit.BeforeClass;
+import org.junit.Before;
 import org.junit.runners.Parameterized;
 import org.junit.runner.RunWith;
 import org.junit.Test;
@@ -35,11 +33,9 @@ import java.util.Properties;
 import java.util.concurrent.Callable;
 
 @RunWith(Parameterized.class)
-public class TestKerberosAuthenticator {
+public class TestKerberosAuthenticator extends KerberosSecurityTestcase {
   private boolean useTomcat = false;
-  private static MiniKdc kdc;
-  private static File workDir;
-  private static File keytabFile;
+  private File keytabFile;
 
   public TestKerberosAuthenticator(boolean useTomcat) {
     this.useTomcat = useTomcat;
@@ -53,24 +49,15 @@ public class TestKerberosAuthenticator {
     });
   }
 
-  @BeforeClass
-  public static void setup() throws Exception {
+  @Before
+  public void setup() throws Exception {
     // create keytab
     keytabFile = new File(KerberosTestUtils.getKeytabFile());
     String clientPrincipal = KerberosTestUtils.getClientPrincipal();
     String serverPrincipal = KerberosTestUtils.getServerPrincipal();
     clientPrincipal = clientPrincipal.substring(0, clientPrincipal.lastIndexOf("@"));
     serverPrincipal = serverPrincipal.substring(0, serverPrincipal.lastIndexOf("@"));
-    workDir = new File(System.getProperty("test.dir", "target"));
-    kdc = new MiniKdc(MiniKdc.createConf(), workDir);
-    kdc.start();
-    kdc.createPrincipal(keytabFile, clientPrincipal, serverPrincipal);
-  }
-
-  @AfterClass
-  public static void teardown() throws KrbException {
-    keytabFile.delete();
-    kdc.stop();
+    getKdc().createPrincipal(keytabFile, clientPrincipal, serverPrincipal);
   }
 
   private Properties getAuthenticationHandlerConfiguration() {
