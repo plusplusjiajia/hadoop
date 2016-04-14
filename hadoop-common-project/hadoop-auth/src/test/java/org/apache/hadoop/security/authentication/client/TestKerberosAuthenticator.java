@@ -21,6 +21,7 @@ import org.apache.hadoop.security.authentication.server.KerberosAuthenticationHa
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.runners.Parameterized;
+import org.junit.runners.Parameterized.Parameters;
 import org.junit.runner.RunWith;
 import org.junit.Test;
 
@@ -34,8 +35,8 @@ import java.util.concurrent.Callable;
 
 @RunWith(Parameterized.class)
 public class TestKerberosAuthenticator extends KerberosSecurityTestcase {
+
   private boolean useTomcat = false;
-  private File keytabFile;
 
   public TestKerberosAuthenticator(boolean useTomcat) {
     this.useTomcat = useTomcat;
@@ -52,7 +53,7 @@ public class TestKerberosAuthenticator extends KerberosSecurityTestcase {
   @Before
   public void setup() throws Exception {
     // create keytab
-    keytabFile = new File(KerberosTestUtils.getKeytabFile());
+    File keytabFile = new File(KerberosTestUtils.getKeytabFile());
     String clientPrincipal = KerberosTestUtils.getClientPrincipal();
     String serverPrincipal = KerberosTestUtils.getServerPrincipal();
     clientPrincipal = clientPrincipal.substring(0, clientPrincipal.lastIndexOf("@"));
