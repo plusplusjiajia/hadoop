@@ -197,10 +197,6 @@ public class MiniKdc {
   private String transport;
   private boolean krb5Debug;
 
-  public List<String> getPrincipals() throws KrbException {
-    return simpleKdc.getKadmin().getPrincipals();
-  }
-
   public void setTransport(String transport) {
     this.transport = transport;
   }
@@ -388,18 +384,14 @@ public class MiniKdc {
    * @throws Exception thrown if the principals or the keytab file could not be
    * created.
    */
-  public void createPrincipal(File keytabFile, String ... principals)
+  public synchronized void createPrincipal(File keytabFile, String ... principals)
           throws Exception {
-    synchronized (this) {
-      simpleKdc.createPrincipals(principals);
-    }
+    simpleKdc.createPrincipals(principals);
     if (keytabFile.exists() && !keytabFile.delete()) {
       LOG.error("Failed to delete keytab file: " + keytabFile);
     }
     for (String principal : principals) {
-      synchronized (this) {
-        simpleKdc.getKadmin().exportKeytab(keytabFile, principal);
-      }
+      simpleKdc.getKadmin().exportKeytab(keytabFile, principal);
     }
   }
 
