@@ -299,12 +299,6 @@
       <groupId>org.apache.kerby</groupId>
       <artifactId>kerb-simplekdc</artifactId>
       <version>1.0.0-RC2</version>
-      <exclusions>
-        <exclusion>
-          <groupId>org.bouncycastle</groupId>
-          <artifactId>bcprov-jdk15on</artifactId>
-        </exclusion>
-      </exclusions>
     </dependency>
   </dependencies>
 
