@@ -33,7 +33,6 @@ import java.io.InputStreamReader;
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Properties;
@@ -342,6 +341,7 @@ public class MiniKdc {
     }
     delete(workDir);
     try {
+      // Will be fixed in next Kerby version.
       Thread.sleep(1000);
     } catch (InterruptedException e) {
       e.printStackTrace();
@@ -384,7 +384,8 @@ public class MiniKdc {
    * @throws Exception thrown if the principals or the keytab file could not be
    * created.
    */
-  public synchronized void createPrincipal(File keytabFile, String ... principals)
+  public synchronized void createPrincipal(File keytabFile,
+                                           String ... principals)
           throws Exception {
     simpleKdc.createPrincipals(principals);
     if (keytabFile.exists() && !keytabFile.delete()) {
