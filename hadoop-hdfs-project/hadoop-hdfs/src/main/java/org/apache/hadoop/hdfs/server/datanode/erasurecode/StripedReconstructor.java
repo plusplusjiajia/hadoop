@@ -27,6 +27,7 @@ import org.apache.hadoop.hdfs.server.datanode.DataNode;
 import org.apache.hadoop.hdfs.server.protocol.BlockECReconstructionCommand.BlockECReconstructionInfo;
 import org.apache.hadoop.hdfs.util.StripedBlockUtil;
 import org.apache.hadoop.io.erasurecode.CodecUtil;
+import org.apache.hadoop.io.erasurecode.ErasureCoderOptions;
 import org.apache.hadoop.io.erasurecode.rawcoder.RawErasureDecoder;
 import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.util.DataChecksum;
@@ -179,11 +180,11 @@ class StripedReconstructor implements Runnable {
       // block replication.
     } catch (Throwable e) {
       LOG.warn("Failed to reconstruct striped block: {}", blockGroup, e);
+      datanode.getMetrics().incrECFailedReconstructionTasks();
     } finally {
       datanode.decrementXmitsInProgress();
-
+      datanode.getMetrics().incrECReconstructionTasks();
       stripedReader.close();
-
       stripedWriter.close();
     }
   }
@@ -215,8 +216,10 @@ class StripedReconstructor implements Runnable {
   // Initialize decoder
   private void initDecoderIfNecessary() {
     if (decoder == null) {
-      decoder = CodecUtil.createRSRawDecoder(conf, ecPolicy.getNumDataUnits(),
-          ecPolicy.getNumParityUnits(), ecPolicy.getCodecName());
+      ErasureCoderOptions coderOptions = new ErasureCoderOptions(
+          ecPolicy.getNumDataUnits(), ecPolicy.getNumParityUnits());
+      decoder = CodecUtil.createRawDecoder(conf, ecPolicy.getCodecName(),
+          coderOptions);
     }
   }
 

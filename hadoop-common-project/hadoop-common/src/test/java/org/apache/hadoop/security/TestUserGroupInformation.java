@@ -20,6 +20,7 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.Text;
+import org.apache.hadoop.ipc.TestRpcBase.TestTokenIdentifier;
 import org.apache.hadoop.metrics2.MetricsRecordBuilder;
 import org.apache.hadoop.security.SaslRpcServer.AuthMethod;
 import org.apache.hadoop.security.UserGroupInformation.AuthenticationMethod;
@@ -28,7 +29,11 @@ import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.security.token.TokenIdentifier;
 import org.apache.hadoop.util.Shell;
 import org.apache.hadoop.util.StringUtils;
-import org.junit.*;
+import org.junit.After;
+import org.junit.Assert;
+import org.junit.Before;
+import org.junit.BeforeClass;
+import org.junit.Test;
 
 import javax.security.auth.Subject;
 import javax.security.auth.kerberos.KerberosPrincipal;
@@ -48,9 +53,22 @@ import java.util.Set;
 
 import static org.apache.hadoop.fs.CommonConfigurationKeys.HADOOP_USER_GROUP_METRICS_PERCENTILES_INTERVALS;
 import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.HADOOP_SECURITY_AUTH_TO_LOCAL;
-import static org.apache.hadoop.ipc.TestSaslRPC.*;
-import static org.apache.hadoop.test.MetricsAsserts.*;
-import static org.junit.Assert.*;
+import static org.apache.hadoop.test.MetricsAsserts.assertCounter;
+import static org.apache.hadoop.test.MetricsAsserts.assertCounterGt;
+import static org.apache.hadoop.test.MetricsAsserts.assertGaugeGt;
+import static org.apache.hadoop.test.MetricsAsserts.assertQuantileGauges;
+import static org.apache.hadoop.test.MetricsAsserts.getDoubleGauge;
+import static org.apache.hadoop.test.MetricsAsserts.getMetrics;
+import static org.junit.Assert.assertArrayEquals;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNotSame;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -107,7 +125,7 @@ public class TestUserGroupInformation {
     UserGroupInformation.setLoginUser(null);
   }
 
-  @Test (timeout = 30000)
+  @Test(timeout = 30000)
   public void testSimpleLogin() throws IOException {
     tryLoginAuthenticationMethod(AuthenticationMethod.SIMPLE, true);
   }
@@ -283,10 +301,15 @@ public class TestUserGroupInformation {
     UserGroupInformation.setConfiguration(conf);
     testConstructorSuccess("user1", "user1");
     testConstructorSuccess("user4@OTHER.REALM", "other-user4");
-    // failure test
-    testConstructorFailures("user2@DEFAULT.REALM");
-    testConstructorFailures("user3/cron@DEFAULT.REALM");
-    testConstructorFailures("user5/cron@OTHER.REALM");
+
+    // pass through test, no transformation
+    testConstructorSuccess("user2@DEFAULT.REALM", "user2@DEFAULT.REALM");
+    testConstructorSuccess("user3/cron@DEFAULT.REALM", "user3/cron@DEFAULT.REALM");
+    testConstructorSuccess("user5/cron@OTHER.REALM", "user5/cron@OTHER.REALM");
+
+    // failures
+    testConstructorFailures("user6@example.com@OTHER.REALM");
+    testConstructorFailures("user7@example.com@DEFAULT.REALM");
     testConstructorFailures(null);
     testConstructorFailures("");
   }
@@ -300,10 +323,13 @@ public class TestUserGroupInformation {
 
     testConstructorSuccess("user1", "user1");
     testConstructorSuccess("user2@DEFAULT.REALM", "user2");
-    testConstructorSuccess("user3/cron@DEFAULT.REALM", "user3");    
+    testConstructorSuccess("user3/cron@DEFAULT.REALM", "user3");
+
+    // no rules applied, local name remains the same
+    testConstructorSuccess("user4@OTHER.REALM", "user4@OTHER.REALM");
+    testConstructorSuccess("user5/cron@OTHER.REALM", "user5/cron@OTHER.REALM");
+
     // failure test
-    testConstructorFailures("user4@OTHER.REALM");
-    testConstructorFailures("user5/cron@OTHER.REALM");
     testConstructorFailures(null);
     testConstructorFailures("");
   }
@@ -344,8 +370,9 @@ public class TestUserGroupInformation {
     } catch (IllegalArgumentException e) {
       String expect = (userName == null || userName.isEmpty())
           ? "Null user" : "Illegal principal name "+userName;
-      assertTrue("Did not find "+ expect + " in " + e,
-          e.toString().contains(expect));
+      String expect2 = "Malformed Kerberos name: "+userName;
+      assertTrue("Did not find "+ expect + " or " + expect2 + " in " + e,
+          e.toString().contains(expect) || e.toString().contains(expect2));
     }
   }
 

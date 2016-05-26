@@ -378,6 +378,7 @@ public class FSAppAttempt extends SchedulerApplicationAttempt
     RMContainer rmContainer = new RMContainerImpl(container, 
         getApplicationAttemptId(), node.getNodeID(),
         appSchedulingInfo.getUser(), rmContext);
+    ((RMContainerImpl)rmContainer).setQueueName(this.getQueueName());
 
     // Add it to allContainers list.
     newlyAllocatedContainers.add(rmContainer);
@@ -928,7 +929,8 @@ public class FSAppAttempt extends SchedulerApplicationAttempt
     // Add up outstanding resource requests
     synchronized (this) {
       for (Priority p : getPriorities()) {
-        for (ResourceRequest r : getResourceRequests(p).values()) {
+        ResourceRequest r = getResourceRequest(p, ResourceRequest.ANY);
+        if (r != null) {
           Resources.multiplyAndAddTo(demand,
               r.getCapability(), r.getNumContainers());
         }

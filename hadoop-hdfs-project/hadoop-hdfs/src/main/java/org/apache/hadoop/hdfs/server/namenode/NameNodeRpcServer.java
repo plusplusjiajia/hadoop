@@ -44,6 +44,7 @@ import java.util.concurrent.Callable;
 import com.google.common.collect.Lists;
 
 import org.apache.hadoop.HadoopIllegalArgumentException;
+import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.conf.ReconfigurationTaskStatus;
 import org.apache.hadoop.crypto.CryptoProtocolVersion;
@@ -167,7 +168,6 @@ import org.apache.hadoop.ipc.RetryCache.CacheEntry;
 import org.apache.hadoop.ipc.RetryCache.CacheEntryWithPayload;
 import org.apache.hadoop.ipc.Server;
 import org.apache.hadoop.ipc.StandbyException;
-import org.apache.hadoop.ipc.WritableRpcEngine;
 import org.apache.hadoop.ipc.RefreshRegistry;
 import org.apache.hadoop.ipc.RefreshResponse;
 import org.apache.hadoop.net.Node;
@@ -208,7 +208,9 @@ import com.google.protobuf.BlockingService;
  * This class is responsible for handling all of the RPC calls to the NameNode.
  * It is created, started, and stopped by {@link NameNode}.
  */
-class NameNodeRpcServer implements NamenodeProtocols {
+@InterfaceAudience.Private
+@VisibleForTesting
+public class NameNodeRpcServer implements NamenodeProtocols {
   
   private static final Logger LOG = NameNode.LOG;
   private static final Logger stateChangeLog = NameNode.stateChangeLog;
@@ -314,8 +316,6 @@ class NameNodeRpcServer implements NamenodeProtocols {
         new TraceAdminProtocolServerSideTranslatorPB(this);
     BlockingService traceAdminService = TraceAdminService
         .newReflectiveBlockingService(traceAdminXlator);
-    
-    WritableRpcEngine.ensureInitialized();
 
     InetSocketAddress serviceRpcAddr = nn.getServiceRpcServerAddress(conf);
     if (serviceRpcAddr != null) {
@@ -2073,7 +2073,8 @@ class NameNodeRpcServer implements NamenodeProtocols {
 
   private void checkNNStartup() throws IOException {
     if (!this.nn.isStarted()) {
-      throw new RetriableException(this.nn.getRole() + " still not started");
+      String message = NameNode.composeNotStartedMessage(this.nn.getRole());
+      throw new RetriableException(message);
     }
   }
 

@@ -18,12 +18,28 @@
 
 package org.apache.hadoop.fs.s3a;
 
-public class Constants {
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
+
+/**
+ * All the constants used with the {@link S3AFileSystem}.
+ */
+@InterfaceAudience.Public
+@InterfaceStability.Evolving
+public final class Constants {
+
+  private Constants() {
+  }
+
   // s3 access key
   public static final String ACCESS_KEY = "fs.s3a.access.key";
 
   // s3 secret key
   public static final String SECRET_KEY = "fs.s3a.secret.key";
+
+  // aws credentials provider
+  public static final String AWS_CREDENTIALS_PROVIDER =
+      "fs.s3a.aws.credentials.provider";
 
   // number of simultaneous connections to s3
   public static final String MAXIMUM_CONNECTIONS = "fs.s3a.connection.maximum";
@@ -122,4 +138,10 @@ public class Constants {
   public static final String FS_S3A = "s3a";
 
   public static final int S3A_DEFAULT_PORT = -1;
+
+  public static final String USER_AGENT_PREFIX = "fs.s3a.user.agent.prefix";
+
+  /** read ahead buffer size to prevent connection re-establishments. */
+  public static final String READAHEAD_RANGE = "fs.s3a.readahead.range";
+  public static final long DEFAULT_READAHEAD_RANGE = 64 * 1024;
 }

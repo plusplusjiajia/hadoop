@@ -41,7 +41,6 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -61,7 +60,6 @@ import org.apache.hadoop.yarn.api.records.ApplicationSubmissionContext;
 import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.ContainerLaunchContext;
 import org.apache.hadoop.yarn.api.records.FinalApplicationStatus;
-import org.apache.hadoop.yarn.api.records.NodeId;
 import org.apache.hadoop.yarn.api.records.NodeState;
 import org.apache.hadoop.yarn.api.records.Priority;
 import org.apache.hadoop.yarn.api.records.QueueInfo;
@@ -1693,28 +1691,31 @@ public class TestFairScheduler extends FairSchedulerTestBase {
     ask1.add(request1);
     scheduler.allocate(id11, ask1, new ArrayList<ContainerId>(), null, null, null, null);
 
-    // Second ask, queue2 requests 1 large + (2 * minReqSize)
+    // Second ask, queue2 requests 1 large.
     List<ResourceRequest> ask2 = new ArrayList<ResourceRequest>();
     ResourceRequest request2 = createResourceRequest(2 * minReqSize, "foo", 1, 1,
         false);
-    ResourceRequest request3 = createResourceRequest(minReqSize, "bar", 1, 2,
-        false);
+    ResourceRequest request3 = createResourceRequest(2 * minReqSize,
+            ResourceRequest.ANY, 1, 1, false);
     ask2.add(request2);
     ask2.add(request3);
     scheduler.allocate(id21, ask2, new ArrayList<ContainerId>(), null, null, null, null);
 
-    // Third ask, queue2 requests 1 large
+    // Third ask, queue2 requests 2 small (minReqSize).
     List<ResourceRequest> ask3 = new ArrayList<ResourceRequest>();
-    ResourceRequest request4 =
-        createResourceRequest(2 * minReqSize, ResourceRequest.ANY, 1, 1, true);
+    ResourceRequest request4 = createResourceRequest(minReqSize, "bar", 2, 2,
+            true);
+    ResourceRequest request5 = createResourceRequest(minReqSize,
+            ResourceRequest.ANY, 2, 2, true);
     ask3.add(request4);
+    ask3.add(request5);
     scheduler.allocate(id22, ask3, new ArrayList<ContainerId>(), null, null, null, null);
 
     scheduler.update();
 
     assertEquals(2 * minReqSize, scheduler.getQueueManager().getQueue("root.queue1")
         .getDemand().getMemory());
-    assertEquals(2 * minReqSize + 2 * minReqSize + (2 * minReqSize), scheduler
+    assertEquals(2 * minReqSize + 2 * minReqSize, scheduler
         .getQueueManager().getQueue("root.queue2").getDemand()
         .getMemory());
   }
@@ -3286,6 +3287,7 @@ public class TestFairScheduler extends FairSchedulerTestBase {
   @Test
   public void testQueueMaxAMShareDefault() throws Exception {
     conf.set(FairSchedulerConfiguration.ALLOCATION_FILE, ALLOC_FILE);
+    conf.setInt(YarnConfiguration.RM_SCHEDULER_MAXIMUM_ALLOCATION_VCORES, 6);
 
     PrintWriter out = new PrintWriter(new FileWriter(ALLOC_FILE));
     out.println("<?xml version=\"1.0\"?>");
@@ -3296,11 +3298,14 @@ public class TestFairScheduler extends FairSchedulerTestBase {
     out.println("<maxAMShare>0.4</maxAMShare>");
     out.println("</queue>");
     out.println("<queue name=\"queue3\">");
+    out.println("<maxResources>10240 mb 4 vcores</maxResources>");
     out.println("</queue>");
     out.println("<queue name=\"queue4\">");
     out.println("</queue>");
     out.println("<queue name=\"queue5\">");
     out.println("</queue>");
+    out.println(
+        "<defaultQueueSchedulingPolicy>fair</defaultQueueSchedulingPolicy>");
     out.println("</allocations>");
     out.close();
 
@@ -3309,7 +3314,7 @@ public class TestFairScheduler extends FairSchedulerTestBase {
     scheduler.reinitialize(conf, resourceManager.getRMContext());
 
     RMNode node =
-        MockNodes.newNodeInfo(1, Resources.createResource(8192, 20),
+        MockNodes.newNodeInfo(1, Resources.createResource(8192, 10),
             0, "127.0.0.1");
     NodeAddedSchedulerEvent nodeEvent = new NodeAddedSchedulerEvent(node);
     NodeUpdateSchedulerEvent updateEvent = new NodeUpdateSchedulerEvent(node);
@@ -3377,6 +3382,44 @@ public class TestFairScheduler extends FairSchedulerTestBase {
         0, app2.getLiveContainers().size());
     assertEquals("Queue2's AM resource usage should be 0 MB memory",
         0, queue2.getAmResourceUsage().getMemory());
+
+    // Remove the app2
+    AppAttemptRemovedSchedulerEvent appRemovedEvent2 =
+        new AppAttemptRemovedSchedulerEvent(attId2,
+                RMAppAttemptState.FINISHED, false);
+    scheduler.handle(appRemovedEvent2);
+    scheduler.update();
+
+    // AM3 can pass the fair share checking, but it takes all available VCore,
+    // So the AM3 is not accepted.
+    ApplicationAttemptId attId3 = createAppAttemptId(3, 1);
+    createApplicationWithAMResource(attId3, "queue3", "test1", amResource1);
+    createSchedulingRequestExistingApplication(1024, 6, amPriority, attId3);
+    FSAppAttempt app3 = scheduler.getSchedulerApp(attId3);
+    scheduler.update();
+    scheduler.handle(updateEvent);
+    assertEquals("Application3's AM resource shouldn't be updated",
+            0, app3.getAMResource().getMemory());
+    assertEquals("Application3's AM should not be running",
+            0, app3.getLiveContainers().size());
+    assertEquals("Queue3's AM resource usage should be 0 MB memory",
+            0, queue3.getAmResourceUsage().getMemory());
+
+    // AM4 can pass the fair share checking and it doesn't takes all
+    // available VCore, but it need 5 VCores which are more than
+    // maxResources(4 VCores). So the AM4 is not accepted.
+    ApplicationAttemptId attId4 = createAppAttemptId(4, 1);
+    createApplicationWithAMResource(attId4, "queue3", "test1", amResource1);
+    createSchedulingRequestExistingApplication(1024, 5, amPriority, attId4);
+    FSAppAttempt app4 = scheduler.getSchedulerApp(attId4);
+    scheduler.update();
+    scheduler.handle(updateEvent);
+    assertEquals("Application4's AM resource shouldn't be updated",
+            0, app4.getAMResource().getMemory());
+    assertEquals("Application4's AM should not be running",
+            0, app4.getLiveContainers().size());
+    assertEquals("Queue3's AM resource usage should be 0 MB memory",
+            0, queue3.getAmResourceUsage().getMemory());
   }
 
   /**
@@ -4322,7 +4365,7 @@ public class TestFairScheduler extends FairSchedulerTestBase {
           resourceManager
               .getResourceScheduler()
               .getSchedulerNode(resourceEvent.getNodeId())
-              .setTotalResource(resourceEvent.getResourceOption().getResource());
+              .updateTotalResource(resourceEvent.getResourceOption().getResource());
         }
       }
     });
