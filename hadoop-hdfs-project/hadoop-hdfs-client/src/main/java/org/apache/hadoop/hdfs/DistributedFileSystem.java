@@ -204,7 +204,7 @@ public class DistributedFileSystem extends FileSystem {
    * @return path component of {file}
    * @throws IllegalArgumentException if URI does not belong to this DFS
    */
-  private String getPathName(Path file) {
+  String getPathName(Path file) {
     checkPath(file);
     String result = file.toUri().getPath();
     if (!DFSUtilClient.isValidName(result)) {
@@ -2508,5 +2508,18 @@ public class DistributedFileSystem extends FileSystem {
       DFSClient.LOG.warn("Cannot get all encrypted trash roots", e);
     }
     return ret;
+  }
+
+  @Override
+  protected Path fixRelativePart(Path p) {
+    return super.fixRelativePart(p);
+  }
+
+  Statistics getFsStatistics() {
+    return statistics;
+  }
+
+  DFSOpsCountStatistics getDFSOpsCountStatistics() {
+    return storageStatistics;
   }
 }

@@ -92,8 +92,18 @@ public class TestYarnConfigurationFields extends TestConfigurationFieldsBase {
         .add(YarnConfiguration.DEFAULT_AMRM_PROXY_INTERCEPTOR_CLASS_PIPELINE);
     configurationPropsToSkipCompare.add(YarnConfiguration.CURATOR_LEADER_ELECTOR);
 
+    // Ignore blacklisting nodes for AM failures feature since it is still a
+    // "work in progress"
+    configurationPropsToSkipCompare.add(YarnConfiguration.
+        AM_SCHEDULING_NODE_BLACKLISTING_ENABLED);
+    configurationPropsToSkipCompare.add(YarnConfiguration.
+        AM_SCHEDULING_NODE_BLACKLISTING_DISABLE_THRESHOLD);
+
     // Ignore all YARN Application Timeline Service (version 1) properties
     configurationPrefixToSkipCompare.add("yarn.timeline-service.");
+    // skip deprecated RM_SYSTEM_METRICS_PUBLISHER_ENABLED
+    configurationPropsToSkipCompare
+        .add(YarnConfiguration.RM_SYSTEM_METRICS_PUBLISHER_ENABLED);
 
     // Used as Java command line properties, not XML
     configurationPrefixToSkipCompare.add("yarn.app.container");

@@ -23,6 +23,10 @@ import org.apache.hadoop.classification.InterfaceStability;
 
 /**
  * All the constants used with the {@link S3AFileSystem}.
+ *
+ * Some of the strings are marked as {@code Unstable}. This means
+ * that they may be unsupported in future; at which point they will be marked
+ * as deprecated and simply ignored.
  */
 @InterfaceAudience.Public
 @InterfaceStability.Evolving
@@ -40,6 +44,9 @@ public final class Constants {
   // aws credentials provider
   public static final String AWS_CREDENTIALS_PROVIDER =
       "fs.s3a.aws.credentials.provider";
+
+  // session token for when using TemporaryAWSCredentialsProvider
+  public static final String SESSION_TOKEN = "fs.s3a.session.token";
 
   // number of simultaneous connections to s3
   public static final String MAXIMUM_CONNECTIONS = "fs.s3a.connection.maximum";
@@ -151,4 +158,36 @@ public final class Constants {
   /** read ahead buffer size to prevent connection re-establishments. */
   public static final String READAHEAD_RANGE = "fs.s3a.readahead.range";
   public static final long DEFAULT_READAHEAD_RANGE = 64 * 1024;
+
+  /**
+   * Which input strategy to use for buffering, seeking and similar when
+   * reading data.
+   * Value: {@value}
+   */
+  @InterfaceStability.Unstable
+  public static final String INPUT_FADVISE =
+      "fs.s3a.experimental.input.fadvise";
+
+  /**
+   * General input. Some seeks, some reads.
+   * Value: {@value}
+   */
+  @InterfaceStability.Unstable
+  public static final String INPUT_FADV_NORMAL = "normal";
+
+  /**
+   * Optimized for sequential access.
+   * Value: {@value}
+   */
+  @InterfaceStability.Unstable
+  public static final String INPUT_FADV_SEQUENTIAL = "sequential";
+
+  /**
+   * Optimized purely for random seek+read/positionedRead operations;
+   * The performance of sequential IO may be reduced in exchange for
+   * more efficient {@code seek()} operations.
+   * Value: {@value}
+   */
+  @InterfaceStability.Unstable
+  public static final String INPUT_FADV_RANDOM = "random";
 }

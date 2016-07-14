@@ -207,6 +207,9 @@ public class CommonConfigurationKeys extends CommonConfigurationKeysPublic {
   public static final String
       HADOOP_SECURITY_SERVICE_AUTHORIZATION_DATANODE_LIFELINE =
           "security.datanode.lifeline.protocol.acl";
+  public static final String
+      HADOOP_SECURITY_SERVICE_AUTHORIZATION_RECONFIGURATION =
+      "security.reconfiguration.protocol.acl";
   public static final String 
   SECURITY_HA_SERVICE_PROTOCOL_ACL = "security.ha.service.protocol.acl";
   public static final String 
@@ -228,12 +231,20 @@ public class CommonConfigurationKeys extends CommonConfigurationKeysPublic {
   public static final boolean HADOOP_SECURITY_TOKEN_SERVICE_USE_IP_DEFAULT =
       true;
 
-  /** See <a href="{@docRoot}/../core-default.html">core-default.xml .</a> */
+  /**
+   * @see
+   * <a href="{@docRoot}/../hadoop-project-dist/hadoop-common/core-default.xml">
+   * core-default.xml</a>
+   */
   public static final String HADOOP_SECURITY_DNS_LOG_SLOW_LOOKUPS_ENABLED_KEY =
       "hadoop.security.dns.log-slow-lookups.enabled";
   public static final boolean
       HADOOP_SECURITY_DNS_LOG_SLOW_LOOKUPS_ENABLED_DEFAULT = false;
-  /** See <a href="{@docRoot}/../core-default.html">core-default.xml .</a> */
+  /**
+   * @see
+   * <a href="{@docRoot}/../hadoop-project-dist/hadoop-common/core-default.xml">
+   * core-default.xml</a>
+   */
   public static final String
       HADOOP_SECURITY_DNS_LOG_SLOW_LOOKUPS_THRESHOLD_MS_KEY =
       "hadoop.security.dns.log-slow-lookups.threshold.ms";
@@ -324,6 +335,9 @@ public class CommonConfigurationKeys extends CommonConfigurationKeysPublic {
   public static final long HADOOP_SECURITY_UID_NAME_CACHE_TIMEOUT_DEFAULT =
     4*60*60; // 4 hours
   
+  public static final String  IPC_CLIENT_ASYNC_CALLS_MAX_KEY =
+      "ipc.client.async.calls.max";
+  public static final int     IPC_CLIENT_ASYNC_CALLS_MAX_DEFAULT = 100;
   public static final String  IPC_CLIENT_FALLBACK_TO_SIMPLE_AUTH_ALLOWED_KEY = "ipc.client.fallback-to-simple-auth-allowed";
   public static final boolean IPC_CLIENT_FALLBACK_TO_SIMPLE_AUTH_ALLOWED_DEFAULT = false;
 

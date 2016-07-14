@@ -397,6 +397,16 @@ public class DFSConfigKeys extends CommonConfigurationKeys {
   public static final int     DFS_NAMENODE_MAX_XATTR_SIZE_DEFAULT = 16384;
   public static final int     DFS_NAMENODE_MAX_XATTR_SIZE_HARD_LIMIT = 32768;
 
+  public static final String  DFS_NAMENODE_LEASE_RECHECK_INTERVAL_MS_KEY =
+      "dfs.namenode.lease-recheck-interval-ms";
+  public static final long    DFS_NAMENODE_LEASE_RECHECK_INTERVAL_MS_DEFAULT =
+      2000;
+  public static final String
+      DFS_NAMENODE_MAX_LOCK_HOLD_TO_RELEASE_LEASE_MS_KEY =
+      "dfs.namenode.max-lock-hold-to-release-lease-ms";
+  public static final long
+      DFS_NAMENODE_MAX_LOCK_HOLD_TO_RELEASE_LEASE_MS_DEFAULT = 25;
+
   public static final String  DFS_UPGRADE_DOMAIN_FACTOR = "dfs.namenode.upgrade.domain.factor";
   public static final int DFS_UPGRADE_DOMAIN_FACTOR_DEFAULT = DFS_REPLICATION_DEFAULT;
 
@@ -731,6 +741,12 @@ public class DFSConfigKeys extends CommonConfigurationKeys {
   // Security-related configs
   public static final String DFS_ENCRYPT_DATA_TRANSFER_KEY = "dfs.encrypt.data.transfer";
   public static final boolean DFS_ENCRYPT_DATA_TRANSFER_DEFAULT = false;
+  public static final String DFS_XFRAME_OPTION_ENABLED = "dfs.xframe.enabled";
+  public static final boolean DFS_XFRAME_OPTION_ENABLED_DEFAULT = true;
+
+  public static final String DFS_XFRAME_OPTION_VALUE = "dfs.xframe.value";
+  public static final String DFS_XFRAME_OPTION_VALUE_DEFAULT = "SAMEORIGIN";
+
   @Deprecated
   public static final String DFS_ENCRYPT_DATA_TRANSFER_CIPHER_KEY_BITLENGTH_KEY =
       HdfsClientConfigKeys.DFS_ENCRYPT_DATA_TRANSFER_CIPHER_KEY_BITLENGTH_KEY;
@@ -919,6 +935,32 @@ public class DFSConfigKeys extends CommonConfigurationKeys {
   public static final int
       DFS_DATANODE_TRANSFER_SOCKET_RECV_BUFFER_SIZE_DEFAULT =
       HdfsConstants.DEFAULT_DATA_SOCKET_SIZE;
+
+  public static final String
+      DFS_DATA_TRANSFER_SERVER_TCPNODELAY =
+      "dfs.data.transfer.server.tcpnodelay";
+  public static final boolean
+      DFS_DATA_TRANSFER_SERVER_TCPNODELAY_DEFAULT = true;
+
+  // Disk Balancer Keys
+  public static final String DFS_DISK_BALANCER_ENABLED =
+      "dfs.disk.balancer.enabled";
+  public static final boolean DFS_DISK_BALANCER_ENABLED_DEFAULT = false;
+
+  public static final String DFS_DISK_BALANCER_MAX_DISK_THRUPUT =
+      "dfs.disk.balancer.max.disk.throughputInMBperSec";
+  public static final int DFS_DISK_BALANCER_MAX_DISK_THRUPUT_DEFAULT =
+      10;
+
+  public static final String DFS_DISK_BALANCER_MAX_DISK_ERRORS =
+      "dfs.disk.balancer.max.disk.errors";
+  public static final int DFS_DISK_BALANCER_MAX_DISK_ERRORS_DEFAULT = 5;
+
+
+  public static final String DFS_DISK_BALANCER_BLOCK_TOLERANCE =
+      "dfs.disk.balancer.block.tolerance.percent";
+  public static final int DFS_DISK_BALANCER_BLOCK_TOLERANCE_DEFAULT = 5;
+
 
   // dfs.client.retry confs are moved to HdfsClientConfigKeys.Retry 
   @Deprecated

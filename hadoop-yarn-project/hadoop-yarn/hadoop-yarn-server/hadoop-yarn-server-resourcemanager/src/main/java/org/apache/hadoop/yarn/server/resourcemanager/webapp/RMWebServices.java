@@ -25,6 +25,7 @@ import java.security.AccessControlException;
 import java.security.Principal;
 import java.security.PrivilegedExceptionAction;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.EnumSet;
 import java.util.HashMap;
@@ -85,12 +86,15 @@ import org.apache.hadoop.yarn.api.protocolrecords.KillApplicationResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.MoveApplicationAcrossQueuesRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.RenewDelegationTokenRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.RenewDelegationTokenResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.ReservationDeleteRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.ReservationListRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.ReservationListResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.ReservationSubmissionRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.ReservationSubmissionResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.ReservationUpdateRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.SubmitApplicationRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.SubmitApplicationResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.UpdateApplicationPriorityRequest;
-import org.apache.hadoop.yarn.api.records.AMBlackListingRequest;
 import org.apache.hadoop.yarn.api.records.ApplicationAccessType;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.ApplicationReport;
@@ -110,6 +114,7 @@ import org.apache.hadoop.yarn.api.records.ReservationRequest;
 import org.apache.hadoop.yarn.api.records.ReservationRequestInterpreter;
 import org.apache.hadoop.yarn.api.records.ReservationRequests;
 import org.apache.hadoop.yarn.api.records.Resource;
+import org.apache.hadoop.yarn.api.records.URL;
 import org.apache.hadoop.yarn.api.records.YarnApplicationState;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.exceptions.YarnException;
@@ -130,7 +135,6 @@ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CSQueue;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityScheduler;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.FairScheduler;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fifo.FifoScheduler;
-import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.AMBlackListingRequestInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.AppAttemptInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.AppAttemptsInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.AppInfo;
@@ -168,10 +172,6 @@ import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ReservationReque
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ReservationSubmissionRequestInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ReservationUpdateRequestInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ReservationUpdateResponseInfo;
-import org.apache.hadoop.yarn.api.protocolrecords.ReservationDeleteRequest;
-import org.apache.hadoop.yarn.api.protocolrecords.ReservationSubmissionRequest;
-import org.apache.hadoop.yarn.api.protocolrecords.ReservationSubmissionResponse;
-import org.apache.hadoop.yarn.api.protocolrecords.ReservationUpdateRequest;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ResourceInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.SchedulerInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.SchedulerTypeInfo;
@@ -229,12 +229,18 @@ public class RMWebServices extends WebServices {
   protected Boolean hasAccess(RMApp app, HttpServletRequest hsr) {
     // Check for the authorization.
     UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
+    List<String> forwardedAddresses = null;
+    String forwardedFor = hsr.getHeader("X-Forwarded-For");
+    if (forwardedFor != null) {
+      forwardedAddresses = Arrays.asList(forwardedFor.split(","));
+    }
     if (callerUGI != null
         && !(this.rm.getApplicationACLsManager().checkAccess(callerUGI,
               ApplicationAccessType.VIEW_APP, app.getUser(),
               app.getApplicationId()) ||
             this.rm.getQueueACLsManager().checkAccess(callerUGI,
-                QueueACL.ADMINISTER_QUEUE, app))) {
+                QueueACL.ADMINISTER_QUEUE, app, hsr.getRemoteAddr(),
+                forwardedAddresses))) {
       return false;
     }
     return true;
@@ -375,7 +381,7 @@ public class RMWebServices extends WebServices {
     if (sched == null) {
       throw new NotFoundException("Null ResourceScheduler instance");
     }
-    NodeId nid = ConverterUtils.toNodeId(nodeId);
+    NodeId nid = NodeId.fromString(nodeId);
     RMNode ni = this.rm.getRMContext().getRMNodes().get(nid);
     boolean isInactive = false;
     if (ni == null) {
@@ -1469,9 +1475,7 @@ public class RMWebServices extends WebServices {
     String error =
         "Could not parse application id " + newApp.getApplicationId();
     try {
-      appid =
-          ConverterUtils.toApplicationId(recordFactory,
-            newApp.getApplicationId());
+      appid = ApplicationId.fromString(newApp.getApplicationId());
     } catch (Exception e) {
       throw new BadRequestException(error);
     }
@@ -1498,10 +1502,6 @@ public class RMWebServices extends WebServices {
       ReservationId reservationId = ReservationId.parseReservationId(
           reservationIdStr);
       appContext.setReservationID(reservationId);
-    }
-    if (newApp.getAMBlackListingRequestInfo() != null) {
-      appContext.setAMBlackListRequest(createAMBlackListingRequest(
-          newApp.getAMBlackListingRequestInfo()));
     }
     return appContext;
   }
@@ -1559,7 +1559,7 @@ public class RMWebServices extends WebServices {
       LocalResourceInfo l = entry.getValue();
       LocalResource lr =
           LocalResource.newInstance(
-            ConverterUtils.getYarnUrlFromURI(l.getUrl()), l.getType(),
+              URL.fromURI(l.getUrl()), l.getType(),
             l.getVisibility(), l.getSize(), l.getTimestamp());
       hlr.put(entry.getKey(), lr);
     }
@@ -1649,13 +1649,6 @@ public class RMWebServices extends WebServices {
         logAggregationContextInfo.getRolledLogsExcludePattern(),
         logAggregationContextInfo.getLogAggregationPolicyClassName(),
         logAggregationContextInfo.getLogAggregationPolicyParameters());
-  }
-
-  private AMBlackListingRequest createAMBlackListingRequest(
-      AMBlackListingRequestInfo amBlackListingRequestInfo) {
-    return AMBlackListingRequest.newInstance(
-        amBlackListingRequestInfo.getAMBlackListingEnabled(),
-        amBlackListingRequestInfo.getBlackListingDisableFailureThreshold());
   }
 
   @POST

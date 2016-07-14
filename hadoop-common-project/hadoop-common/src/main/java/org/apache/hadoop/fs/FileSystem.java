@@ -1252,7 +1252,6 @@ public abstract class FileSystem extends Configured implements Closeable {
   /**
    * Renames Path src to Path dst
    * <ul>
-   * <li
    * <li>Fails if src is a file and dst is a directory.
    * <li>Fails if src is a directory and dst is a file.
    * <li>Fails if the parent of dst does not exist or is a file.
@@ -3620,8 +3619,11 @@ public abstract class FileSystem extends Configured implements Closeable {
    * Reset all statistics for all file systems
    */
   public static synchronized void clearStatistics() {
-    for(Statistics stat: statisticsTable.values()) {
-      stat.reset();
+    final Iterator<StorageStatistics> iterator =
+        GlobalStorageStatistics.INSTANCE.iterator();
+    while (iterator.hasNext()) {
+      final StorageStatistics statistics = iterator.next();
+      statistics.reset();
     }
   }
 
